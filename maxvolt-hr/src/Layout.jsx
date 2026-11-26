@@ -35,6 +35,7 @@ const LeavePage = lazy(() => import('./pages/Leave'));
 const ProfilePage = lazy(() => import('./pages/Profile'));
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { armFieldDutyWake, disarmFieldDutyWake } from '@/lib/fieldDutyWake';
+import { revokeGeoDeviceToken } from '@/lib/geoDeviceToken';
 import LocationGate from '@/components/LocationGate';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
 import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, isBackgroundGeofenceAvailable, resumeGeofence } from '@/lib/geofenceBackground';
@@ -788,6 +789,7 @@ function LayoutInner({ children, currentPageName }) {
 
   const handleLogout = async () => {
     await clearNativePushToken().catch(() => {});
+    await revokeGeoDeviceToken();   // cancel this phone's background-tracking token on the server before forgetting it
     await stopBackgroundGeofence().catch(() => {});
     await disarmFieldDutyWake();   // this phone must not start field-duty recording for the next person
     await base44.auth.logout();

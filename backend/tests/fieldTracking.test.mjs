@@ -361,3 +361,38 @@ test('clock: a phone running fast or slow is corrected to server time; nonsense 
   assert.equal(geofenceEventTime({ occurred_at: '2026-11-25T13:00:00.000Z' }, NOW).ms, NOW);              // older app: receipt time
   assert.equal(geofenceEventTime({ occurred_at: '2026-11-25T13:05:00.000Z', device_now: '2026-11-25T13:00:00.000Z' }, NOW).ms, NOW);   // negative age is clamped
 });
+
+test('accuracy: a one-fix spike is removed, a real turn-around and a stop are kept', async () => {
+  const { cleanTrail, finalizeTrip, accuracyStats, geofenceAllowedM, pathDistanceM } = await import('../utils/fieldTracking.js');
+  const mk = (x, y, secAgo, extra = {}) => ({ lat: 28.6 + y / 111195, lng: 77.2 + x / (111195 * Math.cos(28.6 * Math.PI / 180)), t: new Date(NOW - secAgo * 1000).toISOString(), acc: 10, ...extra });
+  const spiky = [mk(0, 0, 100), mk(100, 0, 90), mk(100, 150, 80), mk(110, 0, 70), mk(200, 0, 60)];         // the third fix jumps 150 m north and straight back
+  const c = cleanTrail(spiky);
+  assert.equal(c.length, 4);
+  assert.ok(Math.abs(pathDistanceM(c) - 200) < 5, String(pathDistanceM(c)));
+  assert.ok(pathDistanceM(spiky) > 490);
+  // real out-and-back (drive 150 m out, wait 10 minutes, come back): untouched
+  const real = [mk(0, 0, 1000), mk(0, 150, 900), mk(0, 150, 300), mk(0, 0, 200)];
+  assert.equal(cleanTrail(real).length, 4);
+  // gap-flagged fixes are never treated as spikes
+  assert.equal(cleanTrail([mk(0, 0, 100), mk(100, 150, 80, { g: 1 }), mk(200, 0, 60)]).length, 3);
+  // final distance: spike km removed, original kept, never inflated, huge cuts flagged instead of applied
+  const longTrail = Array.from({ length: 12 }, (_, i) => mk(i * 300, 0, 1200 - i * 60));                // 3.3 km, one 150 m spike in the middle
+  longTrail.splice(6, 0, mk(1800 + 5, 150, 1200 - 6 * 60 + 30, { acc: 25 }));   // a poor-accuracy fix well off the road line
+  const rawKm = pathDistanceM(longTrail) / 1000;
+  const t1 = finalizeTrip({ points: longTrail, distance_km: rawKm });
+  assert.equal(t1.distance_raw_km, rawKm); assert.ok(t1.distance_km < rawKm - 0.15 && t1.distance_km > 3.2 && t1.spike_km_removed > 0.15, JSON.stringify([t1.distance_km, rawKm]));
+  const t1b = finalizeTrip({ points: spiky, distance_km: 0.49 });                      // would remove >25%: flagged, not applied
+  assert.equal(t1b.distance_km, 0.49); assert.equal(t1b.distance_review, true);
+  const t2 = finalizeTrip({ points: [mk(0, 0, 100), mk(100, 0, 90), mk(200, 0, 80)], distance_km: 0.2 });
+  assert.equal(t2.distance_km, 0.2);
+  assert.deepEqual(finalizeTrip({ points: [], distance_km: 0 }), { points: [], distance_km: 0 });
+  // fix-quality statistics
+  assert.deepEqual(accuracyStats([5, 8, 12, 15, 40]), { n: 5, median_m: 12, p90_m: 40, good_pct: 80 });
+  assert.equal(accuracyStats([]).median_m, null);
+  // a route reports its accuracy and distance from the cleaned trail
+  const r = buildRoute([{ id: 'a', status: 'completed', start_time: iso(200), end_time: iso(50), points: spiky }], NOW);
+  assert.ok(r.distance_km < 0.25); assert.equal(r.accuracy.median_m, 10);
+  // geofence: an arrival may be reported from at most radius + half the error + 20 m (was radius + error + 200 m)
+  assert.equal(geofenceAllowedM(100, 30), 135);
+  assert.equal(geofenceAllowedM(100, 500), 100 + 25 + 20);                              // error beyond the accuracy limit is capped
+});

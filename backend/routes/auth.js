@@ -5,6 +5,7 @@ import { randomBytes } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { one, run } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
+import { revokeAllDeviceTokens } from '../utils/deviceTokens.js';
 
 const router = Router();
 
@@ -298,6 +299,7 @@ router.post('/reset-password', async (req, res) => {
     return res.status(400).json({ error: 'Could not find the account for this reset link. Please request a new one.' });
   }
   await run('DELETE FROM reset_tokens WHERE token = $1', [resetToken]);
+  try { const u = await one('SELECT id FROM users WHERE LOWER(email)=$1', [record.email]); if (u) await revokeAllDeviceTokens(u.id); } catch { /* best effort */ }
   res.json({ success: true });
 });
 
@@ -322,6 +324,7 @@ router.post('/change-password', async (req, res) => {
 
   const hash = bcrypt.hashSync(new_password, 10);
   await run('UPDATE users SET password=$1, must_change_password=FALSE, updated_at=NOW()::TEXT WHERE id=$2', [hash, user.id]);
+  revokeAllDeviceTokens(user.id).catch(() => {});   // every phone's background-tracking token stops working
   res.json({ success: true });
 });
 

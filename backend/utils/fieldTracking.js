@@ -30,6 +30,7 @@ export const FT_DEFAULTS = {
   checkpoint_minutes: 30,      // a timed checkpoint (time, place, km so far) is marked on the route this often
   max_session_hours: 16,       // a field-duty session may not stay open longer than this; it is closed automatically
   geofence_max_accuracy_m: 50,   // geofence ENTER (attendance in) is refused when the fix is less accurate than this
+  geofence_slack_m: 20,          // how far outside a fence boundary an arrival may be reported from (plus half the fix error); was 200 m
   geofence_exit_accuracy_m: 100, // geofence EXIT: a little looser, because refusing it would leave a session wrongly open
   geofence_max_event_age_h: 6,   // a queued geofence event older than this is refused (was 48 h)
   require_location_permission: 'off',       // who is BLOCKED from the app without location access: 'tracked' (field-duty / geofence employees), 'all', or 'off' (off for now)
@@ -41,7 +42,7 @@ export const FT_DEFAULTS = {
 };
 
 const LIMITS = {
-  max_accuracy_m: [5, 100], first_fix_accuracy_m: [10, 150], geofence_max_accuracy_m: [10, 150], geofence_exit_accuracy_m: [10, 250], geofence_max_event_age_h: [1, 48], device_report_minutes: [1, 60], min_interval_s: [1, 120], max_speed_kmh: [30, 300], max_point_age_h: [1, 72],
+  max_accuracy_m: [5, 100], first_fix_accuracy_m: [10, 150], geofence_max_accuracy_m: [10, 150], geofence_slack_m: [0, 100], geofence_exit_accuracy_m: [10, 250], geofence_max_event_age_h: [1, 48], device_report_minutes: [1, 60], min_interval_s: [1, 120], max_speed_kmh: [30, 300], max_point_age_h: [1, 72],
   max_future_s: [0, 600], gap_minutes: [2, 120], gap_moved_m: [20, 2000], live_stale_minutes: [2, 120], max_batch: [10, 1000], max_session_hours: [2, 48], stop_radius_m: [30, 500], stop_min_minutes: [5, 120], long_stop_minutes: [10, 480], checkpoint_minutes: [5, 120],
 };
 
@@ -213,27 +214,29 @@ export function liveStatus(lastPosT, nowMs, cfgIn) {
 export function buildRoute(trips, nowMs, cfgIn, maxPoints = 4000, fences = []) {
   const cfg = cfgIn || FT_DEFAULTS;
   const sorted = [...(trips || [])].sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
-  const segments = [], gaps = [], stops = [], checkpointsAll = [];
+  const segments = [], gaps = [], stops = [], checkpointsAll = [], accs = [];
   let distanceM = 0, estimatedM = 0, live = null, accepted = 0, rejected = 0;
   for (const tr of sorted) {
     const pts = (tr.points || []).filter(p => Number.isFinite(Number(p.lat)) && Number.isFinite(Date.parse(p.t))).sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+    const clean = cleanTrail(pts);     // GPS spikes removed: distance, stays, checkpoints and the drawn line all come from the cleaned trail
     const open = tr.status === 'active';
     const startMs = Date.parse(tr.start_time), endMs = open ? nowMs : Date.parse(tr.end_time || tr.last_point_at || tr.start_time);
     const tripGaps = detectGaps(pts, tr.beats, { startMs, endMs, open }, cfg).map(g => ({ ...g, trip_id: tr.id }));
     gaps.push(...tripGaps);
-    stops.push(...detectStops(pts, tripGaps, { startMs, endMs, open, liveMs: Date.parse(tr.last_pos?.t || '') }, fences, cfg).map(s => ({ ...s, trip_id: tr.id })));
-    checkpointsAll.push(...checkpoints(pts, startMs, endMs, cfg).map(c => ({ ...c, trip_id: tr.id })));
-    const dM = pathDistanceM(pts);
+    stops.push(...detectStops(clean, tripGaps, { startMs, endMs, open, liveMs: Date.parse(tr.last_pos?.t || '') }, fences, cfg).map(s => ({ ...s, trip_id: tr.id })));
+    checkpointsAll.push(...checkpoints(clean, startMs, endMs, cfg).map(c => ({ ...c, trip_id: tr.id })));
+    const dM = pathDistanceM(clean);
     let est = 0;
-    for (let i = 1; i < pts.length; i++) if (pts[i].g) est += havM(pts[i - 1], pts[i]);
+    for (let i = 1; i < clean.length; i++) if (clean[i].g) est += havM(clean[i - 1], clean[i]);
+    accs.push(...clean.map(p => Number(p.acc)).filter(Number.isFinite));
     distanceM += dM; estimatedM += est;
     accepted += tr.stats?.accepted || pts.length;
     rejected += Object.values(tr.rule_stats || {}).reduce((a, b) => a + (Number(b) || 0), 0);
-    const step = pts.length > maxPoints ? Math.ceil(pts.length / maxPoints) : 1;
+    const step = clean.length > maxPoints ? Math.ceil(clean.length / maxPoints) : 1;
     segments.push({
       trip_id: tr.id, status: tr.status, vehicle_type: tr.vehicle_type, purpose: tr.purpose || '', source: tr.source || '',
       start_time: tr.start_time, end_time: tr.end_time || null,
-      points: pts.filter((_, i) => i % step === 0 || i === pts.length - 1).map(p => ({ lat: p.lat, lng: p.lng, t: p.t, g: p.g ? 1 : undefined })),
+      points: clean.filter((_, i) => i % step === 0 || i === clean.length - 1).map(p => ({ lat: p.lat, lng: p.lng, t: p.t, g: p.g ? 1 : undefined })),
       distance_km: Math.round(dM / 10) / 100,
     });
     const lp = tr.last_pos || pts[pts.length - 1];
@@ -250,7 +253,7 @@ export function buildRoute(trips, nowMs, cfgIn, maxPoints = 4000, fences = []) {
     estimated_km: Math.round(estimatedM / 10) / 100,
     gap_minutes_total: gaps.reduce((a, g) => a + g.minutes, 0),
     points_accepted: accepted, points_rejected: rejected,
-    stops, checkpoints: checkpointsAll,
+    stops, checkpoints: checkpointsAll, accuracy: accuracyStats(accs),
     duration_min: Math.round(segments.reduce((a, s) => a + Math.max(0, (Date.parse(s.end_time || '') || (s.status === 'active' ? nowMs : Date.parse(s.start_time))) - Date.parse(s.start_time)), 0) / 60000),
     longest_stop_min: stops.reduce((m, s) => (s.at_office ? m : Math.max(m, s.minutes)), 0),
   };
@@ -504,4 +507,60 @@ export function geofenceEventTime({ occurred_at, device_now }, serverNowMs) {
   if (!Number.isFinite(occ) || !Number.isFinite(dev)) return { ms: serverNowMs, fromDevice: false, ageMs: 0 };
   const ageMs = Math.max(0, dev - occ);
   return { ms: serverNowMs - ageMs, fromDevice: true, ageMs };
+}
+
+/* ── trail accuracy: spikes, final distance, fix-quality statistics ─────── */
+
+// A GPS spike is one fix that jumps away and straight back (urban canyons, reflections): A -> B -> C where B is far from both
+// neighbours but A and C are close together, all within two minutes. It adds distance that was never travelled. A real out-and-back
+// (a turn-around, a stop at a far point) has a long time gap or a stop at B, so it is never touched.
+// Metres from B to the straight line A-C (local flat-earth projection; fine at these distances).
+function lineDeviationM(A, B, C) {
+  const kx = 111195 * Math.cos(A.lat * Math.PI / 180), ky = 111195;
+  const bx = (B.lng - A.lng) * kx, by = (B.lat - A.lat) * ky, cx = (C.lng - A.lng) * kx, cy = (C.lat - A.lat) * ky;
+  const len = Math.hypot(cx, cy);
+  return len === 0 ? Math.hypot(bx, by) : Math.abs(bx * cy - by * cx) / len;
+}
+
+export function cleanTrail(points) {
+  const pts = (points || []).filter(p => Number.isFinite(Number(p.lat)) && Number.isFinite(Date.parse(p.t)));
+  if (pts.length < 3) return pts;
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const A = out[out.length - 1], B = pts[i], C = pts[i + 1];
+    const dAB = havM(A, B), dBC = havM(B, C), dAC = havM(A, C);
+    const dt = Math.abs(Date.parse(C.t) - Date.parse(A.t));
+    // either an out-and-back (A and C close together), or - while moving - a fix with a poor error radius that sits well off the line A-C
+    const outAndBack = dAC < 0.5 * Math.min(dAB, dBC);
+    const offLine = Number(B.acc) >= 15 && dAB + dBC > 1.25 * dAC + 40 && lineDeviationM(A, B, C) > 60;
+    const spike = dt <= 120000 && dAB > 30 && dBC > 30 && (outAndBack || offLine) && !B.g && !C.g;
+    if (!spike) out.push(B);
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+// When a session ends its distance is recomputed from the cleaned trail. It can only go DOWN by removing spikes (never inflate), and
+// a cleanup that would remove more than 25% is not trusted: the stored figure stays and the session is flagged for review.
+export function finalizeTrip(trip) {
+  const pts = (trip?.points || []);
+  if (pts.length < 3 || !(trip.distance_km > 0)) return trip;
+  const cleanKm = pathDistanceM(cleanTrail(pts)) / 1000;
+  const rawKm = trip.distance_km;
+  if (cleanKm >= rawKm * 0.999) return { ...trip, distance_raw_km: rawKm };
+  if (cleanKm >= rawKm * 0.75) return { ...trip, distance_raw_km: rawKm, distance_km: Math.round(cleanKm * 100) / 100, spike_km_removed: Math.round((rawKm - cleanKm) * 100) / 100 };
+  return { ...trip, distance_raw_km: rawKm, distance_review: true };
+}
+
+// How good the recorded fixes were (reported error radius in metres): median, 90th percentile and the share within 20 m.
+export function accuracyStats(accs) {
+  const a = (accs || []).map(Number).filter(n => Number.isFinite(n) && n >= 0).sort((x, y) => x - y);
+  if (!a.length) return { n: 0, median_m: null, p90_m: null, good_pct: null };
+  const q = (p) => a[Math.min(a.length - 1, Math.floor(p * a.length))];
+  return { n: a.length, median_m: Math.round(q(0.5)), p90_m: Math.round(q(0.9)), good_pct: Math.round(a.filter(x => x <= 20).length / a.length * 100) };
+}
+
+// How far outside a fence boundary an arrival may be reported from: half the fix error (capped) plus a small fixed slack.
+export function geofenceAllowedM(radiusM, accuracyM, cfg = FT_DEFAULTS) {
+  return Number(radiusM) + Math.min(Number(accuracyM) || 0, cfg.geofence_max_accuracy_m) * 0.5 + cfg.geofence_slack_m;
 }

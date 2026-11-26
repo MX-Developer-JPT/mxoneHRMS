@@ -24,6 +24,7 @@ import { toast } from 'sonner';
 import { registerPlugin } from '@capacitor/core';
 import { base44 } from '@/api/base44Client';
 import { signedDistanceM } from '@/lib/geofenceShape';
+import { getGeoDeviceToken } from '@/lib/geoDeviceToken';
 
 const PERSIST_KEY = 'geo_engine_v2';
 const DEFAULT_CFG = {
@@ -386,15 +387,9 @@ async function persistHeadless(Capacitor) {
   const BG = nativePlugin();
   // The native tracker keeps its own long-lived, geofence-only token so it keeps working when the app is not opened for weeks.
   // Falls back to the normal login token if the server can't issue one (older server / offline).
+  // 30-day token, renewed here on every start of tracking (one shared implementation: lib/geoDeviceToken.js)
   let token = '';
-  try {
-    const cached = JSON.parse(localStorage.getItem('geo_device_token_v1') || 'null');
-    if (cached?.token && cached.uid === userId && Date.now() - cached.at < 90 * 86400000) token = cached.token;
-    else {
-      const r = await base44.functions.invoke('issueGeofenceDeviceToken', {}); const d = r?.data || r;
-      if (d?.success && d.token) { token = d.token; localStorage.setItem('geo_device_token_v1', JSON.stringify({ token, uid: userId, at: Date.now() })); }
-    }
-  } catch { /* use the login token below */ }
+  try { token = await getGeoDeviceToken({ refresh: true }); } catch { /* use the login token below */ }
   await BG.persistHeadlessState({
     token: token || localStorage.getItem('base44_access_token') || '',
     fencesJson: JSON.stringify(fences),

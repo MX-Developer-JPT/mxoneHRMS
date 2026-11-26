@@ -7,7 +7,7 @@ export async function armFieldDutyWake() {
   try {
     const { Capacitor, registerPlugin } = await import('@capacitor/core');
     if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') return;
-    const token = await getGeoDeviceToken();
+    const token = await getGeoDeviceToken({ refresh: true });   // renewed on every app start (30-day token)
     if (!token) return;
     await registerPlugin('FieldDutyWake').arm({ token, apiBase: window.location.origin });
   } catch { /* an older app build without the plugin, or offline: nothing to do */ }

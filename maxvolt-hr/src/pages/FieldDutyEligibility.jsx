@@ -44,6 +44,16 @@ export default function FieldDutyEligibility() {
     setUpdating(prev => ({ ...prev, [emp.id]: false }));
   };
 
+  // HR: cancel every phone's background-tracking token for one employee (lost / handed-over phone). The employee's own app gets a new
+  // token the next time it starts; a lost phone cannot.
+  const signOutPhones = async (emp) => {
+    if (!window.confirm('Sign out all phones of ' + (emp.display_name || emp.employee_code) + '? Background tracking stops on every phone until they open the app again.')) return;
+    try {
+      const r = await base44.functions.invoke('revokeDeviceTokens', { user_id: emp.user_id }); const d = r.data || r;
+      if (d.success) toast.success('All phones of ' + (emp.display_name || emp.employee_code) + ' signed out of background tracking'); else toast.error(d.error || 'Could not sign out phones');
+    } catch (e) { toast.error('Failed: ' + e.message); }
+  };
+
   const filtered = employees.filter(emp =>
     emp.display_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     emp.employee_code?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -131,6 +141,7 @@ export default function FieldDutyEligibility() {
                     {emp.field_duty_tracking_eligible && (
                       <Badge className="bg-orange-100 text-orange-800">Eligible</Badge>
                     )}
+                    <button className="text-xs text-gray-500 underline hover:text-red-600" onClick={() => signOutPhones(emp)}>Sign out phones</button>
                     <Switch
                       checked={!!emp.field_duty_tracking_eligible}
                       onCheckedChange={() => toggleEligibility(emp)}

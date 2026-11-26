@@ -3,7 +3,7 @@
 // starts the phone's background recorder. Eligibility is re-checked every time: nobody HR has switched off is ever nudged.
 import { all, one, run } from '../db.js';
 import { sendPushToUser, sendFieldDutyWake } from '../utils/push.js';
-import { nudgeDue, wakeDue, sessionCloseReason, sessionEndMs, normalizeConfig, attendanceSyncAction } from '../utils/fieldTracking.js';
+import { finalizeTrip, nudgeDue, wakeDue, sessionCloseReason, sessionEndMs, normalizeConfig, attendanceSyncAction } from '../utils/fieldTracking.js';
 import { saveFieldDaySummary } from './fieldDayStore.js';
 import { randomUUID } from 'node:crypto';
 import { keyedLock } from '../utils/keyedLock.js';
@@ -35,7 +35,7 @@ export async function closeInvalidFieldSessions(nowMs = Date.now()) {
     if (!t || t.status !== 'active') continue;
     const endMs = sessionEndMs(t, cfg);
     const old = nowMs - (Date.parse(t.start_time) || nowMs) > 48 * 3600000;
-    const upd = { ...t, status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: why.text, auto_closed_by: 'system', needs_review: true, ...(old ? { claim_blocked: true } : {}) };
+    const upd = { ...finalizeTrip(t), status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: why.text, auto_closed_by: 'system', needs_review: true, ...(old ? { claim_blocked: true } : {}) };
     await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(upd), r.id]);
     saveFieldDaySummary(r.user_id, t.date).catch(() => {});
     closed++;
@@ -89,7 +89,7 @@ export async function syncODFieldSessions(nowMs = Date.now()) {
       const fresh = await one("SELECT data FROM entities WHERE id=$1 AND type='FieldTrip'", [trip.rowId]);
       const { rowId, ...doc } = fresh ? { rowId: trip.rowId, ...JSON.parse(fresh.data) } : trip;
       if (doc.status !== 'active') continue;
-      await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...doc, status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: act.reason, auto_closed_by: 'od_sync' }), rowId]);
+      await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...finalizeTrip(doc), status: 'completed', end_time: new Date(endMs).toISOString(), auto_closed: true, auto_closed_reason: act.reason, auto_closed_by: 'od_sync' }), rowId]);
       saveFieldDaySummary(uid, trip.date).catch(() => {});
       stopped++;
       } finally { relT(); }

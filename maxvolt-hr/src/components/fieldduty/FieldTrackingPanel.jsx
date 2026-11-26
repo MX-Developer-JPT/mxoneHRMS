@@ -28,6 +28,7 @@ const PROBLEM_LABEL = {
 const RULE_FIELDS_GEOFENCE = [
   ['first_fix_accuracy_m', 'First fix max error (m)', 'The start of a session may be a little rougher'],
   ['geofence_max_accuracy_m', 'Geofence entry max error (m)', 'Attendance IN is refused when less accurate'],
+  ['geofence_slack_m', 'Geofence boundary slack (m)', 'How far outside the boundary an arrival may be reported from'],
   ['geofence_exit_accuracy_m', 'Geofence exit max error (m)', 'Looser: refusing an exit leaves a day open'],
   ['geofence_max_event_age_h', 'Geofence event max age (h)', 'Older queued events are refused'],
   ['device_report_minutes', 'Phone status report (min)', 'How often the app reports permission / GPS / battery'],
@@ -232,7 +233,7 @@ export default function FieldTrackingPanel({ isHR }) {
                           {route.live ? <p className={`text-sm font-semibold ${route.live.state === 'live' ? 'text-green-700' : 'text-gray-600'}`}>{route.live.state === 'live' ? 'Live now' : route.on_duty_now ? `Offline ${route.live.age_minutes} min` : 'Last position'}</p> : <p className="text-sm text-gray-400">No location</p>}
                           {route.live && <p className="text-[10px] text-gray-500">{fmtTime(route.live.t)}{route.live.acc ? ` · ±${Math.round(route.live.acc)} m` : ''}</p>}</div>
                         <div className="rounded-lg border p-2.5"><p className="text-[11px] text-gray-500">Tracking gaps</p><p className={`text-lg font-bold ${route.gaps.length ? 'text-red-600' : 'text-green-700'}`}>{route.gaps.length}</p><p className="text-[10px] text-gray-500">{route.gap_minutes_total} min without data</p></div>
-                        <div className="rounded-lg border p-2.5"><p className="text-[11px] text-gray-500">GPS points</p><p className="text-lg font-bold text-gray-800">{route.points_accepted}</p><p className="text-[10px] text-gray-500">{route.points_rejected} rejected by rules</p></div>
+                        <div className="rounded-lg border p-2.5"><p className="text-[11px] text-gray-500">GPS points</p><p className="text-lg font-bold text-gray-800">{route.points_accepted}</p><p className="text-[10px] text-gray-500">{route.points_rejected} rejected by rules</p>{route.accuracy?.n > 0 && <p className="text-[10px] text-gray-500">typical error ±{route.accuracy.median_m} m · {route.accuracy.good_pct}% within 20 m</p>}</div>
                       </div>
                       {route.segments.length === 0
                         ? <p className="text-sm text-gray-400 text-center py-16 border rounded-lg">No field-duty tracking was recorded for this employee on {data.date}.</p>

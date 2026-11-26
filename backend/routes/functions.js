@@ -1090,6 +1090,7 @@ function buildConsentFormPdf(data) {
 // could both pass the "not already in progress" check and double-punch.
 const _geoLocks = new Map();
 import { keyedLock } from '../utils/keyedLock.js';
+import { revokeAllDeviceTokens, revokeDeviceToken, isDeviceTokenRevoked } from '../utils/deviceTokens.js';
 async function acquireGeoLock(key) {
   const prev = _geoLocks.get(key) || Promise.resolve();
   let release;
@@ -1160,7 +1161,7 @@ const GEO_DEVICE_FNS = new Set(['nativeGeofenceEvent', 'getMyGeofence', 'logFiel
 const getGeoDeviceUser = (req) => {
   const t = req.headers.authorization?.replace('Bearer ', '');
   if (!t) return null;
-  try { const d = jwt.verify(t, GEO_SECRET); return d.scope === 'geofence' && d.id ? { id: d.id, email: d.email, device: true } : null; } catch { return null; }
+  try { const d = jwt.verify(t, GEO_SECRET); return d.scope === 'geofence' && d.id ? { id: d.id, email: d.email, device: true, did: d.did || null, iat: d.iat } : null; } catch { return null; }
 };
 
 // Some Attendance rows can legitimately exist in duplicate for the same
@@ -2737,6 +2738,7 @@ router.post('/:name', async (req, res) => {
     cu = getGeoDeviceUser(req);
     // a 365-day device token must stop working when the employee leaves or is deactivated
     if (cu && !(await one("SELECT 1 AS ok FROM entities WHERE type='Employee' AND user_id=$1 AND status='active'", [cu.id]))) cu = null;
+    if (cu && await isDeviceTokenRevoked(cu)) cu = null;   // signed out on that phone, or all phones revoked (password change / HR)
   }
 
   try {
@@ -4654,7 +4656,21 @@ router.post('/:name', async (req, res) => {
       if (!cu || cu.device) return res.status(401).json({ error: 'Unauthorized' });
       const gtUser = await one('SELECT id, email FROM users WHERE id=$1', [cu.id]);
       if (!gtUser) return res.status(401).json({ error: 'Unauthorized' });
-      return res.json({ success: true, token: jwt.sign({ id: gtUser.id, email: gtUser.email, scope: 'geofence' }, GEO_SECRET, { expiresIn: '365d' }), expires_in_days: 365 });
+      return res.json({ success: true, token: jwt.sign({ id: gtUser.id, email: gtUser.email, scope: 'geofence', did: uuidv4() }, GEO_SECRET, { expiresIn: '30d' }), expires_in_days: 30 });
+    }
+
+    // Cancel device tokens. A phone cancels its own (device_id, on sign-out); everyone may cancel all of their own (all: true);
+    // HR/admin/management may cancel every phone of any employee (user_id).
+    case 'revokeDeviceTokens': {
+      if (!cu || cu.device) return res.status(401).json({ error: 'Unauthorized' });
+      if (p.user_id && p.user_id !== cu.id) {
+        if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
+        await revokeAllDeviceTokens(p.user_id);
+        return res.json({ success: true, scope: 'all_phones_of_employee' });
+      }
+      if (p.all === true) { await revokeAllDeviceTokens(cu.id); return res.json({ success: true, scope: 'all_my_phones' }); }
+      if (p.device_id) { await revokeDeviceToken(String(p.device_id).slice(0, 64)); return res.json({ success: true, scope: 'this_phone' }); }
+      return res.json({ success: false, error: 'device_id, all or user_id required' });
     }
 
     case 'getMyGeofence': {
@@ -4891,7 +4907,7 @@ router.post('/:name', async (req, res) => {
         let nearestDist = Infinity;
         for (const loc of ngLocs) {
           const d = haversineM(Number(latitude), Number(longitude), Number(loc.latitude), Number(loc.longitude));
-          const allowed = Number(loc.geofence_radius) + Number(accuracy || 0) + 200;
+          const allowed = ngRules.geofenceAllowedM(loc.geofence_radius, accuracy, ngCfg);   // radius + half the fix error + 20 m (was + error + 200 m)
           if (d <= allowed && d < nearestDist) { ngFence = loc; nearestDist = d; }
         }
       }
@@ -4907,14 +4923,14 @@ router.post('/:name', async (req, res) => {
       // Defense-in-depth: an 'enter' with coordinates must plausibly be inside the resolved fence
       if (event === 'enter' && ngFence && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
         const dist = haversineM(Number(latitude), Number(longitude), Number(ngFence.latitude), Number(ngFence.longitude));
-        const allowed = Number(ngFence.geofence_radius) + Number(accuracy || 0) + 200;
+        const allowed = ngRules.geofenceAllowedM(ngFence.geofence_radius, accuracy, ngCfg);
         if (dist > allowed) return res.json({ success: false, error: `Reported position is ${Math.round(dist)}m from ${ngFence.name} (allowed ${Math.round(allowed)}m)`, code: 'OUTSIDE_FENCE' });
       }
       // Rectangle offices: the drawn boundary decides. An enter from a position outside the rectangle is refused; an exit
       // from a position clearly still inside it is ignored (an early/coarse trigger), never closing the day.
       if (ngFence && geoIsShaped(ngFence) && isFinite(Number(latitude)) && isFinite(Number(longitude))) {
         const sd = geoSignedDistanceM(ngFence, Number(latitude), Number(longitude));
-        const slack = Math.min(60, Math.max(20, Number(accuracy || 0) * 0.75));
+        const slack = Math.min(60, ngCfg.geofence_slack_m + Number(accuracy || 0) * 0.25);
         if (event === 'enter' && sd > slack) return res.json({ success: false, error: `Reported position is ${Math.round(sd)}m outside the ${ngFence.name} boundary`, code: 'OUTSIDE_FENCE' });
         if (event === 'exit' && sd < -Math.max(30, Number(accuracy || 0) * 1.5)) return res.json({ success: true, action: 'ignored', reason: 'still_inside_boundary' });
       }
@@ -5437,7 +5453,7 @@ router.post('/:name', async (req, res) => {
       const ft = JSON.parse(ftRow.data);
       if (ft.status !== 'active') return res.json({ success: false, error: 'Trip already ended' });
       const upd = {
-        ...ft, status: 'completed', end_time: new Date().toISOString(),
+        ...(await import('../utils/fieldTracking.js')).finalizeTrip(ft), status: 'completed', end_time: new Date().toISOString(),
         toll_parking_amount: Math.max(0, Number(toll_parking_amount) || 0),
         notes: (notes || '').slice(0, 300),
       };
@@ -5489,7 +5505,7 @@ router.post('/:name', async (req, res) => {
       const cf = JSON.parse(cfRow.data);
       if (cf.status !== 'active') return res.json({ success: false, error: 'Trip is not active' });
       const cfEnd = new Date(Date.parse(cf.last_point_at || cf.start_time)).toISOString();
-      await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...cf, status: 'completed', end_time: cfEnd, auto_closed: true, auto_closed_reason: `Closed by ${cu.email || cu.id}`, closed_by: cu.id }), cfRow.id]);
+      await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...(await import('../utils/fieldTracking.js')).finalizeTrip(cf), status: 'completed', end_time: cfEnd, auto_closed: true, auto_closed_reason: `Closed by ${cu.email || cu.id}`, closed_by: cu.id }), cfRow.id]);
       (await import('../cron/fieldDayStore.js')).saveFieldDaySummary(cfRow.user_id, cf.date).catch(() => {});
       return res.json({ success: true });
     }
