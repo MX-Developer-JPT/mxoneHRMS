@@ -65,8 +65,8 @@ export default function FieldDuty() {
     const pull = async () => {
       try {
         const r = await base44.functions.invoke('getFieldTripTrail', { trip_id: routeFor.id }); const d = r.data || r;
-        if (!dead) setRouteData(d.success ? d : { error: d.error || 'Could not load the route' });
-      } catch (e) { if (!dead) setRouteData({ error: e.message }); }
+        if (!dead) setRouteData(prev => (d.success ? d : prev?.points ? prev : { error: d.error || 'Could not load the route' }));
+      } catch (e) { if (!dead) setRouteData(prev => (prev?.points ? prev : { error: e.message })); }   // a failed refresh keeps the map as it is
     };
     pull();
     const t = routeFor.status === 'active' ? setInterval(pull, 20000) : null;
@@ -76,8 +76,8 @@ export default function FieldDuty() {
   useEffect(() => {
     if (!liveOpen) return undefined;
     let dead = false;
+    setLiveLoading(true);   // spinner for the first load only; later refreshes are silent
     const pull = async () => {
-      setLiveLoading(true);
       try {
         const r = await base44.functions.invoke('getFieldLive', {}); const d = r.data || r;
         if (!dead && d.success) setLivePeople(d.people || []);

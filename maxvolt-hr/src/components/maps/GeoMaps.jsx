@@ -121,7 +121,7 @@ export function OfficePickerMap({ latitude, longitude, radius, onChange, otherFe
 const fmtT = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }); };
 
 // A finished or running trip's route: start, end/last position and the path between.
-export function RouteMap({ points = [], lastPos, fences = [], height = 360, snapped, links, tail }) {
+export function RouteMap({ points = [], lastPos, fences = [], height = 360, snapped, links, tail, fitId = 'trip' }) {
   const line = useMemo(() => points.filter(p => ok(p.lat) && ok(p.lng)).map(p => [Number(p.lat), Number(p.lng)]), [points]);
   const end = lastPos && ok(lastPos.lat) ? [Number(lastPos.lat), Number(lastPos.lng)] : line[line.length - 1];
   const all = [...line, ...(end ? [end] : [])];
@@ -132,7 +132,7 @@ export function RouteMap({ points = [], lastPos, fences = [], height = 360, snap
         <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
         <Fences fences={fences} />
-        {all.length > 0 && <FitTo points={all} />}
+        <FitOnce points={all} id={fitId} />
         {snapped && snapped.length ? <Polyline positions={[...snapped, ...(tail && tail.length > 1 ? [tail] : [])]} pathOptions={{ color: '#ea580c', weight: 5, opacity: 0.9, lineJoin: 'round' }} />
           : line.length > 1 && <Polyline positions={line} pathOptions={{ color: '#ea580c', weight: 4, opacity: 0.85 }} />}
         {(links || []).map((l, i) => <Polyline key={'l' + i} positions={l} pathOptions={{ color: '#d97706', weight: 4, dashArray: '4 8', opacity: 0.9 }}><Tooltip sticky>Estimated road path across a tracking gap</Tooltip></Polyline>)}
@@ -155,7 +155,7 @@ export function LiveMap({ people = [], fences = [], selected, onSelect, trail = 
         <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
         <Fences fences={fences} />
-        {sel ? <FitTo points={trailLine.length > 1 ? trailLine : [[sel.position.lat, sel.position.lng]]} max={16} /> : pts.length > 0 && <FitTo points={pts} />}
+        <FitOnce points={!selected ? pts : !sel ? [] : trailLine.length > 1 ? trailLine : [[sel.position.lat, sel.position.lng]]} id={!selected ? 'all' : `${selected}|${trailLine.length > 1 ? 'trail' : 'dot'}`} />
         {trailLine.length > 1 && <Polyline positions={trailLine} pathOptions={{ color: '#ea580c', weight: 4, opacity: 0.85 }} />}
         {trailLine.length > 0 && <Marker position={trailLine[0]} icon={dot('#16a34a', 14)}><Tooltip>Trip start</Tooltip></Marker>}
         {placed.map(p => (
@@ -324,6 +324,7 @@ function TimeAtClick({ onTimeAt, version }) {
     click: (e) => {
       const edge = map.containerPointToLatLng(e.containerPoint.add([18, 0]));       // about a finger / cursor width at this zoom
       setRes(null);
+      map.panInside(e.latlng, { paddingTopLeft: [160, 190], paddingBottomRight: [160, 20] });   // room for the pop-up; the zoom stays
       setPick({ lat: e.latlng.lat, lng: e.latlng.lng, radius: Math.round(map.distance(e.latlng, edge)), n: Date.now() });
     },
   });
@@ -338,7 +339,7 @@ function TimeAtClick({ onTimeAt, version }) {
   return (
     <>
       {visits.map((v, i) => <CircleMarker key={i} center={[v.lat, v.lng]} radius={7} pathOptions={{ color: '#111827', weight: 3, fillColor: '#fff', fillOpacity: 1 }} />)}
-      <Popup key={pick.n} position={[pick.lat, pick.lng]} maxWidth={300} autoPan eventHandlers={{ remove: () => setPick(p => (p?.n === pick.n ? null : p)) }}>
+      <Popup key={pick.n} position={[pick.lat, pick.lng]} maxWidth={300} autoPan={false} eventHandlers={{ remove: () => setPick(p => (p?.n === pick.n ? null : p)) }}>
         <div style={{ minWidth: 200, maxHeight: 230, overflowY: 'auto', fontSize: 12, lineHeight: 1.45 }}>
           {!res ? 'Looking up the time…'
             : res.success === false ? (res.error || 'Could not look up the time')

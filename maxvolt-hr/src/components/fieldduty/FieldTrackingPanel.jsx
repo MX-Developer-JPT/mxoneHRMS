@@ -118,8 +118,9 @@ export default function FieldTrackingPanel({ isHR }) {
       if (spin) setLoading(true);
       try {
         const r = await base44.functions.invoke('getFieldRoute', { user_id: selected, date }); const d = r.data || r;
-        if (!dead) setData(d.success ? d : { error: d.error || 'Could not load the route' });
-      } catch (e) { if (!dead) setData({ error: e.message || 'Could not load the route' }); }
+        // a background refresh that fails keeps the picture on screen: replacing it would rebuild the map and lose the viewer's zoom
+        if (!dead) setData(prev => (d.success ? d : !spin && prev?.route ? prev : { error: d.error || 'Could not load the route' }));
+      } catch (e) { if (!dead) setData(prev => (!spin && prev?.route ? prev : { error: e.message || 'Could not load the route' })); }
       if (!dead) setLoading(false);
     };
     pull(true);
