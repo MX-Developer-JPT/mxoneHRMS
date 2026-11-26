@@ -7,6 +7,7 @@
 //     every token issued before the floor stops working
 // The list lives in one settings row (it is tiny: tokens expire on their own, old entries are dropped) and is cached for 20 s.
 import { one, run } from '../db.js';
+import { tokenRevoked } from './fieldTracking.js';
 
 const KEY = 'geo_token_revocations';
 const TTL_MS = 20000;
@@ -48,8 +49,5 @@ export async function revokeDeviceToken(did) {
 // decoded = the verified token claims { id, did, iat }
 export async function isDeviceTokenRevoked(decoded) {
   if (!decoded) return true;
-  const data = await load();
-  if (decoded.did && data.dids[String(decoded.did)]) return true;
-  const floor = data.floors[decoded.id];
-  return !!floor && Number(decoded.iat) * 1000 < floor;
+  return tokenRevoked(await load(), decoded);
 }

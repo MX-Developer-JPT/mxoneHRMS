@@ -396,3 +396,23 @@ test('accuracy: a one-fix spike is removed, a real turn-around and a stop are ke
   assert.equal(geofenceAllowedM(100, 30), 135);
   assert.equal(geofenceAllowedM(100, 500), 100 + 25 + 20);                              // error beyond the accuracy limit is capped
 });
+
+test('device tokens: revoked by device, by person-wide floor, never by accident', async () => {
+  const { tokenRevoked } = await import('../utils/fieldTracking.js');
+  const t = (iat, did = 'd1', id = 'u1') => ({ id, did, iat });
+  const now = Date.parse('2026-11-26T05:00:00Z');
+  const floorMs = Date.parse('2026-11-26T04:00:00Z');
+  assert.equal(tokenRevoked({}, t(now / 1000), now), false);
+  assert.equal(tokenRevoked(undefined, t(now / 1000), now), false);
+  assert.equal(tokenRevoked({}, null, now), true);                                                    // no claims = not valid
+  // one phone
+  const byDid = { dids: { d1: now + 86400000 } };
+  assert.equal(tokenRevoked(byDid, t(now / 1000, 'd1'), now), true);
+  assert.equal(tokenRevoked(byDid, t(now / 1000, 'd2'), now), false);                                // another phone of the same person is fine
+  assert.equal(tokenRevoked({ dids: { d1: now - 1 } }, t(now / 1000, 'd1'), now), false);            // an expired entry no longer matters
+  // every phone of a person: tokens issued before the floor die, ones issued after it (renewed) live; other people unaffected
+  const byFloor = { floors: { u1: floorMs } };
+  assert.equal(tokenRevoked(byFloor, t(floorMs / 1000 - 600), now), true);
+  assert.equal(tokenRevoked(byFloor, t(floorMs / 1000 + 600), now), false);
+  assert.equal(tokenRevoked(byFloor, t(floorMs / 1000 - 600, 'd9', 'u2'), now), false);
+});

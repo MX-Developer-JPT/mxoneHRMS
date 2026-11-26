@@ -564,3 +564,13 @@ export function accuracyStats(accs) {
 export function geofenceAllowedM(radiusM, accuracyM, cfg = FT_DEFAULTS) {
   return Number(radiusM) + Math.min(Number(accuracyM) || 0, cfg.geofence_max_accuracy_m) * 0.5 + cfg.geofence_slack_m;
 }
+
+// Is this device token cancelled? data = { floors: {userId: ms}, dids: {deviceId: expiresMs} } (see deviceTokens.js).
+// A phone's own token is cancelled by its device id; every token of a person issued before the person's floor time is cancelled too.
+export function tokenRevoked(data, decoded, nowMs = Date.now()) {
+  if (!decoded) return true;
+  const d = data || {};
+  if (decoded.did && d.dids && d.dids[String(decoded.did)] && d.dids[String(decoded.did)] > nowMs) return true;
+  const floor = d.floors && d.floors[decoded.id];
+  return !!floor && Number(decoded.iat) * 1000 < floor;
+}
