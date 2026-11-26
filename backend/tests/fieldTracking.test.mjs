@@ -6,6 +6,15 @@ import {
   recordBeats, detectGaps, buildRoute, liveStatus, canViewLocation, pathDistanceM,
 } from '../utils/fieldTracking.js';
 import { processPoints } from '../utils/fieldTrip.js';
+import { geofenceExitAllowed } from '../utils/fieldTracking.js';
+
+test('geofence exit: only the session a geofence arrival opened', () => {
+  const IN = (time) => ({ time, device_direction: 'IN' });
+  assert.equal(geofenceExitAllowed({ geofence_open_in: '2026-11-26T09:00:00.000Z', raw_punches: [IN('2026-11-26T09:00:00.000Z')] }), true);
+  assert.equal(geofenceExitAllowed({ raw_punches: [IN('2026-11-26T09:00:00.000Z')] }), false);                      // machine / selfie day
+  assert.equal(geofenceExitAllowed({ geofence_open_in: '2026-11-26T09:00:00.000Z', raw_punches: [IN('2026-11-26T09:00:00.000Z'), { time: '2026-11-26T11:00:00.000Z', device_direction: 'OUT' }, IN('2026-11-26T12:00:00.000Z')] }), false);
+  assert.equal(geofenceExitAllowed(null), false);
+});
 
 const NOW = Date.parse('2026-11-25T10:00:00Z');
 const iso = (secAgo) => new Date(NOW - secAgo * 1000).toISOString();

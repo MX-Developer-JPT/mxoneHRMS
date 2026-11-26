@@ -573,6 +573,14 @@ export function accuracyStats(accs) {
 }
 
 // How far outside a fence boundary an arrival may be reported from: half the fix error (capped) plus a small fixed slack.
+// A geofence departure may only close a session that a geofence arrival opened and that is still the open one - never a day
+// opened by the machine, a selfie, work from home or outduty.
+export function geofenceExitAllowed(att) {
+  if (!att?.geofence_open_in) return false;
+  const last = (att.raw_punches || [])[(att.raw_punches || []).length - 1];
+  return !!last && last.device_direction === 'IN' && Date.parse(last.time) === Date.parse(att.geofence_open_in);
+}
+
 export function geofenceAllowedM(radiusM, accuracyM, cfg = FT_DEFAULTS) {
   return Number(radiusM) + Math.min(Number(accuracyM) || 0, cfg.geofence_max_accuracy_m) * 0.5 + cfg.geofence_slack_m;
 }

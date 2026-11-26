@@ -4847,16 +4847,16 @@ router.post('/:name', async (req, res) => {
       let evUtc = ngClock.ms;
       // The native background paths post the instant it happens, with the PHONE's clock — which
       // anyone can change. For those, the server's own clock is the only time that counts.
-      if (/^(android-os-geofence|ios-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''))) evUtc = Date.now();
+      // A saved-and-sent-later event says how long ago it happened (device_now), so it keeps its real time.
+      if (!ngClock.fromDevice && /^(android-os-geofence|ios-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''))) evUtc = Date.now();
       // Same rules as Field Duty tracking (utils/fieldTracking.js, thresholds in the tracking rules): mock, accuracy, stale, future, impossible jump.
       const ngRules = await import('../utils/fieldTracking.js');
       const ngCfg = await getFieldTrackingConfig();
-      const ngHeadless = /^(android-os-geofence|ios-os-geofence|capacitor-background-geolocation-headless)/.test(String(device_id || ''));
       const ngDev = await one("SELECT data FROM entities WHERE id=$1 AND type='TrackingDevice'", ['td-' + cu.id]);
       let ngPrev = null; try { ngPrev = ngDev ? JSON.parse(ngDev.data).last_geo || null : null; } catch { ngPrev = null; }
       const ngProblem = ngRules.geofenceEventProblem({
         event, accuracy, mock: is_mock === true || p.mock === true || p.simulated === true,
-        occurredMs: !ngHeadless && ngClock.fromDevice ? ngClock.ms : null,
+        occurredMs: ngClock.fromDevice ? ngClock.ms : null,
         lat: Number(latitude), lng: Number(longitude), prev: ngPrev,
       }, ngCfg, Date.now());
       if (ngProblem) {
@@ -4945,7 +4945,7 @@ router.post('/:name', async (req, res) => {
       if (!ngAttRow && event === 'exit') {
         const ngYest = new Date(new Date(evDate + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
         const ngPrevRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, ngYest]);
-        if (ngPrevRow && canContinuePreviousDay({ date: ngYest, ...JSON.parse(ngPrevRow.data) }, ngTime.toISOString())) { ngAttRow = ngPrevRow; ngAttDate = ngYest; }
+        if (ngPrevRow && canContinuePreviousDay({ date: ngYest, ...JSON.parse(ngPrevRow.data) }, evIST.toISOString())) { ngAttRow = ngPrevRow; ngAttDate = ngYest; }
       }
       const ngAtt = ngAttRow ? JSON.parse(ngAttRow.data) : null;
       if (ngAtt?.status === 'regularised' || ngAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — geofence events are ignored' });
@@ -5015,6 +5015,7 @@ router.post('/:name', async (req, res) => {
         }
       } else {
         if (!priorSessionData.is_in_progress) return res.json({ success: true, action: 'none', reason: rawPunches.length ? 'already_checked_out' : 'not_checked_in' });
+        if (!ngRules.geofenceExitAllowed({ ...ngAtt, raw_punches: rawPunches })) return res.json({ success: true, action: 'none', reason: 'not_geofence_session' });
         rawPunches.push({ time: evIST.toISOString(), device_direction: 'OUT' });
       }
 
@@ -5204,10 +5205,17 @@ router.post('/:name', async (req, res) => {
           // simply hasn't ended yet.
           const saTripRow = await one("SELECT id,data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active' AND data::jsonb->>'linked_attendance_id'=$2", [cu.id, saId]);
           if (saTripRow) {
-            const saTrip = JSON.parse(saTripRow.data);
-            const saTripUpd = { ...saTrip, status: 'completed', end_time: new Date().toISOString() };
-            await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(saTripUpd), saTripRow.id]);
-            saFieldTrip = saTripUpd;
+            const saTripRel = await keyedLock('ft:' + JSON.parse(saTripRow.data).id);
+            try {
+              const saFresh = await one("SELECT data FROM entities WHERE id=$1 AND type='FieldTrip'", [saTripRow.id]);   // re-read under the lock
+              const saTrip = JSON.parse(saFresh?.data || saTripRow.data);
+              if (saTrip.status === 'active') {
+                const saTripUpd = { ...(await import('../utils/fieldTracking.js')).finalizeTrip(saTrip), status: 'completed', end_time: new Date().toISOString() };
+                await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(saTripUpd), saTripRow.id]);
+                (await import('../cron/fieldDayStore.js')).saveFieldDaySummary(cu.id, saTrip.date).catch(() => {});
+                saFieldTrip = saTripUpd;
+              }
+            } finally { saTripRel(); }
           }
         }
       }
@@ -5438,6 +5446,8 @@ router.post('/:name', async (req, res) => {
 
     case 'endFieldTrip': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const efRel = await keyedLock('ft:' + String(p.trip_id));   // points arriving at the same moment must not undo the ending
+      try {
       const { trip_id, toll_parking_amount, notes } = p;
       const ftRow = await one("SELECT id,data FROM entities WHERE id=$1 AND type='FieldTrip' AND user_id=$2", [trip_id, cu.id]);
       if (!ftRow) return res.json({ success: false, error: 'Trip not found' });
@@ -5451,6 +5461,7 @@ router.post('/:name', async (req, res) => {
       await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify(upd), ftRow.id]);
       (await import('../cron/fieldDayStore.js')).saveFieldDaySummary(cu.id, upd.date).catch(() => {});
       return res.json({ success: true, trip: { ...upd, points: undefined } });
+      } finally { efRel(); }
     }
 
     // Is a field-duty session open for me right now? Cheap (one indexed lookup): the app asks every 45 s to keep its GPS recorder in step.
@@ -5497,6 +5508,8 @@ router.post('/:name', async (req, res) => {
     // Location is only ever recorded while a Field Duty trip (or auto Outduty trip) is active.
     // HR/management (or the employee's manager) closes a trip that was never ended; it ends at its last recorded moment.
     case 'closeFieldTrip': {
+      const clRel = await keyedLock('ft:' + String(p.trip_id));
+      try {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const cfRow = await one("SELECT id,user_id,data FROM entities WHERE type='FieldTrip' AND id=$1", [p.trip_id]);
       if (!cfRow) return res.json({ success: false, error: 'Trip not found' });
@@ -5508,6 +5521,7 @@ router.post('/:name', async (req, res) => {
       await run("UPDATE entities SET data=$1, status='completed' WHERE id=$2", [JSON.stringify({ ...(await import('../utils/fieldTracking.js')).finalizeTrip(cf), status: 'completed', end_time: cfEnd, auto_closed: true, auto_closed_reason: `Closed by ${cu.email || cu.id}`, closed_by: cu.id }), cfRow.id]);
       (await import('../cron/fieldDayStore.js')).saveFieldDaySummary(cfRow.user_id, cf.date).catch(() => {});
       return res.json({ success: true });
+      } finally { clRel(); }
     }
 
     case 'getFieldLive': {
