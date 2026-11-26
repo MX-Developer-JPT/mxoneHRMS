@@ -528,6 +528,16 @@ cron.schedule('*/15 * * * *', () => {
   closeStaleGatePassRequests().catch(err => console.error('[gatepass-stale-close] failed:', err));
 }, { timezone: 'Asia/Kolkata' });
 
+// ── Visitors left "inside" from a previous day — closed at 12:20 AM IST (and once shortly after boot) ──
+cron.schedule('20 0 * * *', async () => {
+  try { const { closeStaleVisitors } = await import('./cron/visitorAutomation.js'); const r = await closeStaleVisitors(); if (r.closed) console.log('[visitor-auto-checkout]', JSON.stringify(r)); }
+  catch (err) { console.error('[visitor-auto-checkout] failed:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
+setTimeout(async () => {
+  try { const { closeStaleVisitors } = await import('./cron/visitorAutomation.js'); const r = await closeStaleVisitors(); if (r.closed) console.log('[visitor-auto-checkout]', JSON.stringify(r)); }
+  catch (err) { console.error('[visitor-auto-checkout] failed:', err.message); }
+}, 120 * 1000);
+
 // ── Candidate reminders — every 15 minutes ───────────────────
 // Fires any "remind me about this candidate" reminder that's now due.
 cron.schedule('*/15 * * * *', () => {
