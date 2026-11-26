@@ -27,6 +27,7 @@ export default function LocationGate() {
   const policyRef = useRef(policy);
   const prevOk = useRef(null);            // was everything fine at the previous check? (null = not checked yet)
   const lastReport = useRef({ at: 0, sig: '' });
+  const appVersion = useRef(null);
   policyRef.current = policy;
 
   const refreshPolicy = useCallback(async () => {
@@ -34,7 +35,7 @@ export default function LocationGate() {
     try {
       const r = await base44.functions.invoke('getMyTrackingPolicy', {}); const d = r?.data || r;
       if (d?.success) {
-        const p = { required: !!d.required, guide: !!d.guide, background: !!d.background, battery: !!d.battery, report_minutes: d.report_minutes || 5 };
+        const p = { required: !!d.required, guide: !!d.guide, field_tracked: d.field_tracked !== false, background: !!d.background, battery: !!d.battery, report_minutes: d.report_minutes || 5 };
         localStorage.setItem(POLICY_KEY, JSON.stringify(p)); setPolicy(p); return p;
       }
     } catch { /* offline: keep the last known policy */ }
@@ -46,6 +47,7 @@ export default function LocationGate() {
     if (!p || !signedIn() || !(p.required || p.guide)) { setProblems([]); return; }
     const s = await readLocationState();
     stateRef.current = s;
+    if (appVersion.current === null) { try { const { App } = await import('@capacitor/app'); appVersion.current = (await App.getInfo()).version || ''; } catch { appVersion.current = ''; } }
     const probs = problemsFor(s, p);
     // Access was fine a moment ago and now is not: alert immediately, whatever was dismissed before.
     if (probs.length && prevOk.current === true) { setJustOff(true); try { localStorage.removeItem(DISMISS_KEY); } catch { /* */ } setDismissed(null); }
@@ -56,7 +58,7 @@ export default function LocationGate() {
     const due = Date.now() - lastReport.current.at > (p.report_minutes || 5) * 60000;
     if (due || sig !== lastReport.current.sig) {
       lastReport.current = { at: Date.now(), sig };
-      base44.functions.invoke('reportTrackingDevice', { platform: s.platform, fg: s.fg, bg: s.bg, gps: s.gps, battery: s.battery, notif: s.notif }).catch(() => {});
+      base44.functions.invoke('reportTrackingDevice', { platform: s.platform, fg: s.fg, bg: s.bg, gps: s.gps, battery: s.battery, notif: s.notif, app_version: appVersion.current || '', recording: s.recording, queued: s.queued }).catch(() => {});
     }
   }, []);
 

@@ -36,6 +36,7 @@ const ProfilePage = lazy(() => import('./pages/Profile'));
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { armFieldDutyWake, disarmFieldDutyWake } from '@/lib/fieldDutyWake';
 import { revokeGeoDeviceToken } from '@/lib/geoDeviceToken';
+import { startFieldSessionWatcher, stopFieldSessionWatcher } from '@/lib/fieldSessionWatcher';
 import LocationGate from '@/components/LocationGate';
 import { initNativePush, clearNativePushToken } from '@/lib/nativePush';
 import { startBackgroundGeofence, stopBackgroundGeofence, checkGeofenceEligibility, requestBatteryOptimizationExemption, isBackgroundGeofenceAvailable, resumeGeofence } from '@/lib/geofenceBackground';
@@ -752,6 +753,7 @@ function LayoutInner({ children, currentPageName }) {
           const d = res?.data || res;
           const active = d?.success && (d.trips || []).find(t => t.status === 'active');
           if (active) startFieldTripTracking(active.id, active.distance_km || 0);
+          startFieldSessionWatcher();   // a session the server opens later (OD check-in, HR) is picked up within 45 s, no restart needed
           armFieldDutyWake();   // lets a silent push start native recording later, with the app closed (Android app only)
         } catch { /* Field Duty not applicable for this role, or offline — non-fatal */ }
       })();
@@ -789,6 +791,7 @@ function LayoutInner({ children, currentPageName }) {
 
   const handleLogout = async () => {
     await clearNativePushToken().catch(() => {});
+    stopFieldSessionWatcher();
     await revokeGeoDeviceToken();   // cancel this phone's background-tracking token on the server before forgetting it
     await stopBackgroundGeofence().catch(() => {});
     await disarmFieldDutyWake();   // this phone must not start field-duty recording for the next person

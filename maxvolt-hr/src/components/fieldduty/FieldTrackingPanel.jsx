@@ -252,6 +252,8 @@ export default function FieldTrackingPanel({ isHR }) {
                         </div>)}
                       {route.checkpoints?.length > 0 && (
                         <p className="text-[11px] text-gray-500">Numbered grey dots are timed checkpoints: {route.checkpoints.map(c => `${c.n}) ${fmtTime(c.at)} · ${Number(c.km).toFixed(1)} km`).join('   ')}</p>)}
+                      {data.device && (data.device.app_version || data.device.recording !== null) && (
+                        <p className="text-[11px] text-gray-500">Phone: {data.device.platform || '?'}{data.device.app_version ? ' · app ' + data.device.app_version : ''}{data.device.recording === true ? ' · background recorder ON' : data.device.recording === false ? ' · background recorder off' : ''}{data.device.queued ? ' · ' + data.device.queued + ' fixes waiting to upload' : ''}</p>)}
                       {(data.device?.problems?.length > 0 || data.device?.events?.length > 0) && (
                         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-1">
                           <p className="text-sm font-medium text-amber-900 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" />Phone status {data.device.reported_at ? <span className="text-xs font-normal text-amber-700">(last report {fmtTime(data.device.reported_at)})</span> : null}</p>

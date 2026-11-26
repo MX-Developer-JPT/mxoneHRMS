@@ -59,7 +59,14 @@ public class FieldDutyWakePlugin extends Plugin {
         boolean notif = true;
         try { notif = NotificationManagerCompat.from(c).areNotificationsEnabled(); } catch (Exception ignored) {}
         JSObject ret = new JSObject();
+        boolean recording = false; int queued = 0;
+        try {
+            android.content.SharedPreferences tr = c.getSharedPreferences("maxvolt_trip_recorder", Context.MODE_PRIVATE);
+            recording = tr.getBoolean("active", false);
+            queued = new org.json.JSONArray(tr.getString("queue", "[]")).length();
+        } catch (Exception ignored) {}
         ret.put("fg", fg); ret.put("bg", bg); ret.put("gps", gps); ret.put("battery", battery); ret.put("notif", notif);
+        ret.put("recording", recording); ret.put("queued", queued);
         call.resolve(ret);
     }
 

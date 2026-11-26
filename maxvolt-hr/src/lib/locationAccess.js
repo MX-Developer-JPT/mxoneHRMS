@@ -38,7 +38,7 @@ export async function readLocationState() {
     try {
       const { registerPlugin } = await import('@capacitor/core');
       const s = await registerPlugin('FieldDutyWake').locationState();
-      return { platform, fg: !!s.fg, bg: !!s.bg, gps: s.gps !== false, battery: !!s.battery, notif: s.notif !== false };
+      return { platform, fg: !!s.fg, bg: !!s.bg, gps: s.gps !== false, battery: !!s.battery, notif: s.notif !== false, recording: !!s.recording, queued: Number(s.queued) || 0 };
     } catch { /* an app build older than this feature: only what the WebView can tell */ }
     const fg = await webGeolocationGranted(true);
     return { platform, fg, bg: true, gps: true, battery: true, notif: true, legacy: true };   // background / battery cannot be verified on an old build

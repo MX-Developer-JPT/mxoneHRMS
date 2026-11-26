@@ -5462,6 +5462,15 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, trip: { ...upd, points: undefined } });
     }
 
+    // Is a field-duty session open for me right now? Cheap (one indexed lookup): the app asks every 45 s to keep its GPS recorder in step.
+    case 'getMyFieldSession': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const msRow = await one("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active' ORDER BY created_at DESC LIMIT 1", [cu.id]);
+      if (!msRow) return res.json({ success: true, active: null, server_time: new Date().toISOString() });
+      const ms = JSON.parse(msRow.data);
+      return res.json({ success: true, active: { id: ms.id, distance_km: ms.distance_km || 0, start_time: ms.start_time, source: ms.source || '' }, server_time: new Date().toISOString() });
+    }
+
     case 'getFieldTrips': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const rates = await getFieldRates();
@@ -5555,7 +5564,7 @@ router.post('/:name', async (req, res) => {
       const tpCfg = await getFieldTrackingConfig();
       const tpEmp = await getFieldEmployee(cu.id);
       return res.json({
-        success: true, required: locationRequired(tpEmp, tpCfg), guide: locationGuide(tpEmp, tpCfg),
+        success: true, required: locationRequired(tpEmp, tpCfg), guide: locationGuide(tpEmp, tpCfg), field_tracked: !!(tpEmp && tpEmp.field_duty_tracking_eligible),
         background: tpCfg.require_background_permission, battery: tpCfg.require_battery_exemption, report_minutes: tpCfg.device_report_minutes,
       });
     }
@@ -5563,7 +5572,7 @@ router.post('/:name', async (req, res) => {
     // when tracking was switched off and why. (The app also blocks itself on these states; this is the audit trail.)
     case 'reportTrackingDevice': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const rd = await recordTrackingDevice(cu.id, { platform: p.platform, fg: p.fg, bg: p.bg, gps: p.gps, battery: p.battery, notif: p.notif, app_version: p.app_version });
+      const rd = await recordTrackingDevice(cu.id, { platform: p.platform, fg: p.fg, bg: p.bg, gps: p.gps, battery: p.battery, notif: p.notif, app_version: p.app_version, recording: p.recording, queued: p.queued });
       return res.json({ success: true, problems: rd.problems || [] });
     }
 
@@ -5667,7 +5676,7 @@ router.post('/:name', async (req, res) => {
           const r = await one("SELECT data FROM entities WHERE id=$1 AND type='TrackingDevice'", ['td-' + frUser]);
           if (!r) return null; const dv = JSON.parse(r.data);
           const day = (iso) => istDate(Date.parse(iso)) === frDate;
-          return { platform: dv.platform || '', problems: dv.problems || [], reported_at: dv.at || null, events: (dv.events || []).filter(e => day(e.at)) };
+          return { platform: dv.platform || '', app_version: dv.app_version || '', recording: dv.recording ?? null, queued: dv.queued ?? null, problems: dv.problems || [], reported_at: dv.at || null, events: (dv.events || []).filter(e => day(e.at)) };
         })(),
       });
     }
@@ -22115,6 +22124,8 @@ async function recordTrackingDevice(userId, report, extra) {
     const problems = devicePolicyProblems(report, cfg);
     next.platform = String(report.platform || ''); next.fg = report.fg === true; next.bg = report.bg === true; next.gps = report.gps !== false;
     next.battery = report.battery === true; next.notif = report.notif !== false; next.app_version = String(report.app_version || '').slice(0, 20);
+    if (report.recording !== undefined) next.recording = report.recording === true;
+    if (report.queued !== undefined) next.queued = Math.max(0, Math.min(100000, Number(report.queued) || 0));
     next.at = now;
     if (JSON.stringify(problems) !== JSON.stringify(d.problems || [])) events.push({ at: now, kind: 'device', problems });
     next.problems = problems;
