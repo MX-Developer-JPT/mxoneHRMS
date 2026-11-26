@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Circle, Polygon, Marker, Polyline, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { MapContainer, TileLayer, Circle, CircleMarker, Polygon, Marker, Polyline, Popup, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import { outlineOf, polyAreaM2 } from '@/lib/geofenceShape';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -301,9 +301,64 @@ export function AreaEditorMap({ vertices, onChange, otherFences = [], excludeId,
   );
 }
 
+// Fits the map once per subject: a live route that grows every few seconds must not undo the viewer's zoom.
+function FitOnce({ points, id }) {
+  const map = useMap();
+  const done = useRef(null);
+  useEffect(() => {
+    if (!points.length || done.current === id) return;
+    done.current = id;
+    if (points.length === 1) map.setView(points[0], 16); else map.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 16 });
+  }, [points, id, map]);
+  return null;
+}
+
+const fmtS = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }); };
+const spanText = (s) => (s < 90 ? `${s} s` : fmtDur(s / 60));
+
+// Click anywhere on the route: when was the employee there? Asked again whenever the live route updates.
+function TimeAtClick({ onTimeAt, version }) {
+  const [pick, setPick] = useState(null);       // { lat, lng, radius, n }
+  const [res, setRes] = useState(null);
+  const map = useMapEvents({
+    click: (e) => {
+      const edge = map.containerPointToLatLng(e.containerPoint.add([18, 0]));       // about a finger / cursor width at this zoom
+      setRes(null);
+      setPick({ lat: e.latlng.lat, lng: e.latlng.lng, radius: Math.round(map.distance(e.latlng, edge)), n: Date.now() });
+    },
+  });
+  useEffect(() => {
+    if (!pick) return undefined;
+    let dead = false;
+    onTimeAt(pick.lat, pick.lng, pick.radius).then(r => { if (!dead) setRes(r); }).catch(e => { if (!dead) setRes({ success: false, error: e.message }); });
+    return () => { dead = true; };
+  }, [pick?.n, version]);   // eslint-disable-line react-hooks/exhaustive-deps
+  if (!pick) return null;
+  const visits = res?.visits || [];
+  return (
+    <>
+      {visits.map((v, i) => <CircleMarker key={i} center={[v.lat, v.lng]} radius={7} pathOptions={{ color: '#111827', weight: 3, fillColor: '#fff', fillOpacity: 1 }} />)}
+      <Popup key={pick.n} position={[pick.lat, pick.lng]} maxWidth={300} autoPan eventHandlers={{ remove: () => setPick(p => (p?.n === pick.n ? null : p)) }}>
+        <div style={{ minWidth: 200, maxHeight: 230, overflowY: 'auto', fontSize: 12, lineHeight: 1.45 }}>
+          {!res ? 'Looking up the time…'
+            : res.success === false ? (res.error || 'Could not look up the time')
+            : !visits.length ? 'No recorded location here. Click on or next to the route line.'
+            : visits.map((v, i) => (
+              <div key={i} style={{ borderTop: i ? '1px solid #e5e7eb' : 'none', paddingTop: i ? 6 : 0, marginTop: i ? 6 : 0 }}>
+                {v.kind === 'stayed' ? <><b>Here from {fmtS(v.from)} to {fmtS(v.to)}</b><br />{spanText(Math.round((Date.parse(v.to) - Date.parse(v.from)) / 1000))} at this spot</>
+                  : v.kind === 'gap' ? <><b>Between {fmtS(v.from)} and {fmtS(v.to)}</b><br />Nothing was recorded on this stretch, so the exact time is not known.</>
+                  : <><b>{fmtS(v.at)}</b> (± {spanText(v.uncertainty_s)})<br />{v.kind === 'precise' ? 'Passed here' : 'Passed here (estimated between two fixes)'}</>}
+                <br /><span style={{ color: '#6b7280' }}>Nearest GPS fix {fmtS(v.nearest_fix.t)} · {v.nearest_fix.distance_m} m from your click{v.nearest_fix.acc ? ` · GPS error ±${v.nearest_fix.acc} m` : ''}</span>
+              </div>))}
+        </div>
+      </Popup>
+    </>
+  );
+}
+
 // One employee's day: every trip as a time-ordered polyline, start/end markers with timestamps, the live position and
 // tracking gaps (dashed red between the last fix before and the first fix after the silence).
-export function EmployeeRouteMap({ route, fences = [], height = 460 }) {
+export function EmployeeRouteMap({ route, fences = [], height = 460, onTimeAt, fitId = '' }) {
   const segs = useMemo(() => (route?.segments || []).map(s => ({ ...s, line: (s.points || []).filter(p => ok(p.lat) && ok(p.lng)).map(p => [Number(p.lat), Number(p.lng)]) })), [route]);
   const snapped = (s) => (s.snapped && s.snapped.length ? [...s.snapped, ...(s.tail && s.tail.length > 1 ? [s.tail] : [])] : null);
   const gaps = route?.gaps || [];
@@ -321,7 +376,8 @@ export function EmployeeRouteMap({ route, fences = [], height = 460 }) {
         <TileLayer url={TILES} attribution={ATTR} maxZoom={19} referrerPolicy="origin" />
         <Resize />
         <Fences fences={fences} />
-        {fit.length > 0 && <FitTo points={fit} />}
+        <FitOnce points={fit} id={fitId} />
+        {onTimeAt && <TimeAtClick key={fitId} onTimeAt={onTimeAt} version={`${route?.live?.t || ''}|${route?.points_accepted || 0}`} />}
         {segs.map((s, i) => { const sn = snapped(s); return (sn || s.line.length > 1) && <Polyline key={s.trip_id} positions={sn || s.line} pathOptions={{ color: COLORS[i % COLORS.length], weight: 5, opacity: 0.9, lineJoin: 'round' }} />; })}
         {segs.flatMap(s => s.links || []).map((l, i) => <Polyline key={'lk' + i} positions={l} pathOptions={{ color: '#d97706', weight: 4, dashArray: '4 8', opacity: 0.9 }}><Tooltip sticky>Estimated road path across a tracking gap</Tooltip></Polyline>)}
         {!segs.some(s => (s.links || []).length) && gaps.filter(g => g.from_pos && g.to_pos).map((g, i) => (

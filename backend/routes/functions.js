@@ -5432,8 +5432,8 @@ router.post('/:name', async (req, res) => {
       const lfNow = Date.now();
       const lfLast = (ft.points || [])[(ft.points || []).length - 1] || null;
       const lfPoints = lfRules.correctPointTimes(points, lfRules.clockOffsetMs(p.device_now, lfNow));   // the phone's clock never decides a fix time
-      const lfScreen = lfRules.screenPoints(lfPoints, { nowMs: lfNow, tripStartMs: Date.parse(ft.start_time) || 0, last: lfLast }, lfCfg);
-      const { trip: proc } = processPoints(ft, lfScreen.accepted, lfNow);
+      const lfScreen = lfRules.screenPoints(lfPoints, { nowMs: lfNow, tripStartMs: Date.parse(ft.start_time) || 0, last: lfLast, trail: ft.points || [] }, lfCfg);
+      const proc = lfRules.backfillTrail(processPoints(ft, lfScreen.accepted, lfNow).trip, lfScreen.late, lfNow);
       const upd = {
         ...proc,
         beats: lfRules.recordBeats(ft.beats, lfScreen.accepted.map(x => Date.parse(x.t)).concat(lfNow)),   // the server heard from the phone now
@@ -5600,12 +5600,13 @@ router.post('/:name', async (req, res) => {
       for (const r of await all("SELECT user_id,data FROM entities WHERE type='FieldTrip' AND data::jsonb->>'status'='active'")) feActive[r.user_id] = JSON.parse(r.data);
       const feCfg = await getFieldTrackingConfig();
       const feDev = {};
-      for (const r of await all("SELECT user_id,data FROM entities WHERE type='TrackingDevice'")) { try { feDev[r.user_id] = JSON.parse(r.data).problems || []; } catch { /* skip */ } }
+      for (const r of await all("SELECT user_id,data FROM entities WHERE type='TrackingDevice'")) { try { feDev[r.user_id] = JSON.parse(r.data); } catch { /* skip */ } }
+      const feApp = new Set((await all("SELECT DISTINCT user_id FROM device_tokens WHERE platform LIKE '%android%' OR platform LIKE '%ios%'")).map(r => r.user_id));
       const feNow = Date.now();
-      const { liveStatus } = await import('../utils/fieldTracking.js');
+      const { liveStatus, sendingStatus } = await import('../utils/fieldTracking.js');
       const employees = Object.entries(feEmp).filter(([uid]) => feV.isMgmt || (feV.visibleIds || []).includes(uid)).map(([uid, e]) => {
         const a = feActive[uid]; const pos = a ? (a.last_pos || (a.points || []).slice(-1)[0]) : null;
-        return { user_id: uid, ...e, on_duty: !!a, live: a ? liveStatus(pos?.t, feNow, feCfg) : null, device_problems: feDev[uid] || [] };
+        return { user_id: uid, ...e, on_duty: !!a, live: a ? liveStatus(pos?.t, feNow, feCfg) : null, device_problems: feDev[uid]?.problems || [], sending: sendingStatus({ trip: a, device: feDev[uid], hasAndroidApp: feApp.has(uid) }, feNow, feCfg) };
       }).sort((x, y) => (y.on_duty - x.on_duty) || String(x.name).localeCompare(String(y.name)));
       return res.json({ success: true, employees, config: feCfg, server_time: new Date(feNow).toISOString() });
     }
@@ -5634,6 +5635,21 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, user_id: fdUser, days: rows, total_km: Math.round(rows.reduce((a, r) => a + (r.distance_km || 0), 0) * 100) / 100 });
     }
 
+    // "When was this person here?" - a click on the route map. Worked out from every stored fix (the map itself only gets a thinned line).
+    case 'getFieldTimeAt': {
+      if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const taUser = p.user_id || cu.id;
+      const taDate = /^\d{4}-\d{2}-\d{2}$/.test(p.date || '') ? p.date : istDate();
+      const taRules = await import('../utils/fieldTracking.js');
+      const taV = await getFieldViewer(cu);
+      if (!taRules.canViewLocation({ viewerId: cu.id, subjectId: taUser, ...taV })) return res.status(403).json({ error: 'Access denied' });
+      const taEmp = await getFieldEmployee(taUser);
+      if (taUser !== cu.id && !(taEmp && taEmp.field_duty_tracking_eligible)) return res.json({ success: false, error: 'This employee is not enabled for Field Duty Tracking', code: 'NOT_ELIGIBLE' });
+      const taCfg = await getFieldTrackingConfig();
+      const taTrips = await getFieldDayTrips(taUser, taDate, taCfg);
+      return res.json({ success: true, ...taRules.timeAtPoint(taTrips, { lat: p.lat, lng: p.lng }, p.radius_m, taCfg) });
+    }
+
     // One employee, one day: every trip merged in time order — the real GPS path, distance, gaps, live position.
     case 'getFieldRoute': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
@@ -5645,14 +5661,7 @@ router.post('/:name', async (req, res) => {
       const frEmp = await getFieldEmployee(frUser);
       if (frUser !== cu.id && !(frEmp && frEmp.field_duty_tracking_eligible)) return res.json({ success: false, error: 'This employee is not enabled for Field Duty Tracking', code: 'NOT_ELIGIBLE' });
       const frCfg = await getFieldTrackingConfig();
-      let frRows = await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'date'=$2", [frUser, frDate]);
-      if (frDate === istDate()) {   // a session that began before midnight and is still open belongs on today's map too
-        const seen = new Set(frRows.map(r => JSON.parse(r.data).id));
-        for (const r of await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [frUser])) {
-          const d = JSON.parse(r.data); if (!seen.has(d.id) && Date.now() - Date.parse(d.start_time) <= frCfg.max_session_hours * 3600000) frRows.push(r);
-        }
-      }
-      const frTrips = frRows.map(r => JSON.parse(r.data));
+      const frTrips = await getFieldDayTrips(frUser, frDate, frCfg);
       const frStore = await import('../cron/fieldDayStore.js');
       const route = frRules.buildRoute(frTrips, Date.now(), frCfg, 4000, await frStore.loadFences());
       route.snap = { enabled: !!process.env.OSRM_URL && frCfg.snap_to_roads, matched_pct: null };
@@ -22140,6 +22149,19 @@ async function recordTrackingDevice(userId, report, extra) {
 
 // Road-snapped route for display (self-hosted OSRM at OSRM_URL; see /osrm). Cached in its own row so it can never race with
 // the point uploads that rewrite the trip. Returns null when matching is off/unavailable — the map then draws the raw GPS line.
+// one employee's field-duty sessions that belong on a day's map
+async function getFieldDayTrips(userId, date, cfg) {
+  const rows = await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'date'=$2", [userId, date]);
+  const trips = rows.map(r => JSON.parse(r.data));
+  if (date === istDate()) {   // a session that began before midnight and is still open belongs on today's map too
+    const seen = new Set(trips.map(t => t.id));
+    for (const r of await all("SELECT data FROM entities WHERE type='FieldTrip' AND user_id=$1 AND data::jsonb->>'status'='active'", [userId])) {
+      const d = JSON.parse(r.data); if (!seen.has(d.id) && Date.now() - Date.parse(d.start_time) <= cfg.max_session_hours * 3600000) trips.push(d);
+    }
+  }
+  return trips;
+}
+
 async function getTripSnap(tr) {
   const base = process.env.OSRM_URL;
   const pts = tr.points || [];
@@ -22147,7 +22169,7 @@ async function getTripSnap(tr) {
   const id = 'snap-' + tr.id;
   const row = await one("SELECT data FROM entities WHERE id=$1 AND type='FieldTripSnap'", [id]);
   let cached = null; try { cached = row ? JSON.parse(row.data) : null; } catch { cached = null; }
-  const fresh = cached && (cached.n === pts.length || (tr.status === 'active' && pts.length - cached.n < 15 && Date.now() - Date.parse(cached.at) < 60000));
+  const fresh = cached && (cached.rev || 0) === (tr.rev || 0) && (cached.n === pts.length || (tr.status === 'active' && pts.length - cached.n < 15 && Date.now() - Date.parse(cached.at) < 60000));
   if (fresh) return cached;
   try {
     const { snapTrip } = await import('../utils/mapMatch.js');
@@ -22156,7 +22178,7 @@ async function getTripSnap(tr) {
       try { const r = await fetch(url, { signal: ac.signal }); return await r.json(); } finally { clearTimeout(to); }
     };
     const res = await snapTrip(pts, fetchJson, base);
-    const data = { id, trip_id: tr.id, n: pts.length, at: new Date().toISOString(), pieces: res.pieces, matched: res.matched, total: res.total, links: res.links || [] };
+    const data = { id, trip_id: tr.id, rev: tr.rev || 0, n: pts.length, at: new Date().toISOString(), pieces: res.pieces, matched: res.matched, total: res.total, links: res.links || [] };
     await run("DELETE FROM entities WHERE id=$1 AND type='FieldTripSnap'", [id]);
     await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'FieldTripSnap',$2,'ready',$3)", [id, tr.user_id || null, JSON.stringify(data)]);
     return data;

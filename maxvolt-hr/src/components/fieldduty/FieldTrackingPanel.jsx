@@ -148,6 +148,12 @@ export default function FieldTrackingPanel({ isHR }) {
     const s = q.trim().toLowerCase();
     return employees.filter(e => !s || [e.name, e.code, e.department].some(x => String(x || '').toLowerCase().includes(s)));
   }, [employees, q]);
+  const timeAt = useCallback(async (lat, lng, radius_m) => {
+    const r = await base44.functions.invoke('getFieldTimeAt', { user_id: data?.user_id, date: data?.date, lat, lng, radius_m }); return r.data || r;
+  }, [data?.user_id, data?.date]);
+  const sendingNow = employees.filter(e => e.sending?.state === 'sending').length;
+  const notSending = employees.filter(e => e.sending?.state === 'not_sending');
+  const needsFix = employees.filter(e => e.sending?.state === 'off_duty' && e.sending.attention);
   const route = data?.route;
   const onDuty = employees.filter(e => e.on_duty).length;
 
@@ -167,6 +173,15 @@ export default function FieldTrackingPanel({ isHR }) {
         </div>
 
         {rulesOpen && isHR && <RulesEditor onClose={() => setRulesOpen(false)} />}
+
+        {employees.length > 0 && (
+          <details className={`rounded-lg border p-3 ${notSending.length ? 'border-red-200 bg-red-50' : 'bg-gray-50'}`}>
+            <summary className="cursor-pointer text-sm font-medium text-gray-800">Data coverage: {sendingNow} of {onDuty} on duty sending now{notSending.length ? ` · ${notSending.length} not sending` : ''}{needsFix.length ? ` · ${needsFix.length} off duty with a phone to fix` : ''} <span className="font-normal text-gray-500">({employees.length} eligible)</span></summary>
+            <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+              {[...notSending, ...needsFix].map(e => <p key={e.user_id} className={`text-xs ${e.sending.state === 'not_sending' ? 'text-red-700' : 'text-amber-800'}`}><button className="underline font-medium" onClick={() => { setSelected(e.user_id); setDate(todayIST()); setMode('employee'); }}>{e.name}</button> {e.code} · {e.sending.text}</p>)}
+              {!notSending.length && !needsFix.length && <p className="text-xs text-gray-600">Every employee on duty is sending location.</p>}
+            </div>
+          </details>)}
 
         {mode === 'live' ? (
           <div className="grid lg:grid-cols-3 gap-3">
@@ -237,7 +252,8 @@ export default function FieldTrackingPanel({ isHR }) {
                       </div>
                       {route.segments.length === 0
                         ? <p className="text-sm text-gray-400 text-center py-16 border rounded-lg">No field-duty tracking was recorded for this employee on {data.date}.</p>
-                        : <EmployeeRouteMap route={route} fences={fences} />}
+                        : <EmployeeRouteMap route={route} fences={fences} onTimeAt={timeAt} fitId={`${data.user_id}|${data.date}`} />}
+                      {route.segments.length > 0 && <p className="text-xs text-gray-600">Click anywhere on the route to see when the employee was there.</p>}
                       {route.segments.length > 0 && <p className="text-[11px] text-gray-500">{route.snap?.enabled && route.snap.matched_pct > 0 ? `Drawn along roads (${route.snap.matched_pct}% of the path matched to the road network); the rest follows the raw GPS line. Distance always comes from the GPS points.` : 'Drawn from the raw GPS points (road matching is not active).'}{date === todayIST() ? ' Refreshes every 10 seconds.' : ''}</p>}
                       {route.stops?.length > 0 && (
                         <div className="rounded-lg border p-3 space-y-1">

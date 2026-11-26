@@ -93,7 +93,7 @@ test('screen: a batch uploaded out of order is sorted, the first fix may be a li
 test('screen: batches are capped and heartbeats still refuse mock/stale', () => {
   const many = Array.from({ length: 700 }, (_, i) => pt(i * 3, 3000 - i * 4));
   const r = screenPoints(many, ctx({ tripStartMs: 0 }));
-  assert.ok(r.total === 700 && r.rejected.invalid === 200);
+  assert.ok(r.total === 700 && r.rejected.invalid === 0 && r.accepted.length === 350);   // a long offline queue is not cut off
   const hb = screenPoints([pt(0, 10, { hb: true, mock: true }), pt(0, 99999, { hb: true })], ctx({ tripStartMs: 0 }));
   assert.equal(hb.accepted.length, 0);
 });
@@ -415,4 +415,59 @@ test('device tokens: revoked by device, by person-wide floor, never by accident'
   assert.equal(tokenRevoked(byFloor, t(floorMs / 1000 - 600), now), true);
   assert.equal(tokenRevoked(byFloor, t(floorMs / 1000 + 600), now), false);
   assert.equal(tokenRevoked(byFloor, t(floorMs / 1000 - 600, 'd9', 'u2'), now), false);
+});
+
+test('late uploads: an offline backlog that arrives after newer fixes is put back, duplicates are not', async () => {
+  const { backfillTrail } = await import('../utils/fieldTracking.js');
+  let trip = { id: 't', status: 'active', points: [], distance_km: 0, point_count: 0 };
+  const send = (fixes) => {
+    const s = screenPoints(fixes, ctx({ tripStartMs: 0, last: trip.points.at(-1) || null, trail: trip.points }));
+    trip = backfillTrail(processPoints(trip, s.accepted, NOW).trip, s.late, NOW);
+    return s;
+  };
+  send([pt(0, 600), pt(100, 580)]);
+  send([pt(900, 100)]);                                                        // the newest fix overtakes the queue
+  const s = send([pt(200, 500), pt(400, 400), pt(600, 300), pt(100, 580), pt(101, 578)]);
+  assert.equal(s.late.length, 3);
+  assert.equal(s.rejected.out_of_order, 2);                                    // already stored / same moment
+  assert.deepEqual(trip.points.map(p => Math.round((NOW - Date.parse(p.t)) / 1000)), [600, 580, 500, 400, 300, 100]);
+  assert.ok(trip.distance_km > 0.85 && trip.distance_km < 0.95, String(trip.distance_km));
+  assert.equal(trip.rev, 1);
+  assert.equal(send([{ ...pt(0, 450), lat: 19.07 }]).rejected.speed, 1);       // a late teleport is still refused
+});
+
+test('clock: a few seconds of upload delay never moves fix times', async () => {
+  const { clockOffsetMs } = await import('../utils/fieldTracking.js');
+  assert.equal(clockOffsetMs(new Date(NOW - 9000).toISOString(), NOW), 0);
+  assert.equal(clockOffsetMs(new Date(NOW - 60000).toISOString(), NOW), 60000);
+});
+
+test('time at a point: interpolated while moving, a window for a stay, honest about gaps, every visit listed', async () => {
+  const { timeAtPoint } = await import('../utils/fieldTracking.js');
+  const at = (x) => ({ lat: O.lat, lng: pt(x, 0).lng });
+  const secs = (iso_) => Math.round((NOW - Date.parse(iso_)) / 1000);
+  const moving = { id: 'a', start_time: iso(1000), points: [pt(0, 1000), pt(200, 980), pt(400, 960)] };
+  const m = timeAtPoint([moving], at(300), 30);
+  assert.equal(m.visits.length, 1); assert.equal(m.visits[0].kind, 'precise'); assert.equal(secs(m.visits[0].at), 970);
+  assert.equal(timeAtPoint([moving], { lat: O.lat + 0.01, lng: O.lng }, 30).visits.length, 0);
+  const stay = { id: 'b', start_time: iso(5000), points: [pt(0, 5000), pt(200, 4980), pt(202, 3200), pt(400, 3180)], beats: [iso(4800), iso(4200), iso(3600)] };
+  const st = timeAtPoint([stay], at(200), 25).visits;
+  assert.equal(st.length, 1); assert.equal(st[0].kind, 'stayed'); assert.ok(secs(st[0].from) >= 4975 && secs(st[0].to) <= 3205, st[0].from + ' ' + st[0].to);
+  const gap = { id: 'c', start_time: iso(2000), points: [pt(0, 2000), pt(5000, 1000, { g: 1 })] };
+  const g = timeAtPoint([gap], at(2500), 30).visits[0];
+  assert.equal(g.kind, 'gap'); assert.equal(secs(g.from), 2000); assert.equal(secs(g.to), 1000);
+  const twice = { id: 'd', start_time: iso(900), points: [pt(0, 900), pt(200, 880), pt(400, 860), pt(200, 600), pt(0, 580)] };
+  assert.equal(timeAtPoint([twice], at(100), 20).visits.length, 2);
+});
+
+test('coverage: says who is not sending and why', async () => {
+  const { sendingStatus, wakeDue, NUDGE } = await import('../utils/fieldTracking.js');
+  const trip = { status: 'active', points: [{}], last_point_at: iso(60) };
+  assert.equal(sendingStatus({ trip, device: { platform: 'android', problems: [] }, hasAndroidApp: true }, NOW).state, 'sending');
+  assert.match(sendingStatus({ trip: { ...trip, last_point_at: iso(7200) }, device: { platform: 'web', problems: ['location_denied'] } }, NOW).text, /2 h 0 min.*website/);
+  assert.match(sendingStatus({ trip: null, device: null, hasAndroidApp: false }, NOW).text, /never opened/);
+  assert.equal(sendingStatus({ trip: null, device: { platform: 'android', problems: [] }, hasAndroidApp: true }, NOW).attention, false);
+  const noon = Date.parse('2026-11-25T06:30:00Z');
+  const t = { status: 'active', start_time: new Date(noon - 7200000).toISOString(), last_point_at: new Date(noon - 300000).toISOString() };
+  assert.equal(wakeDue(t, { count: NUDGE.WAKE_MAX, lastMs: noon - 3600000 }, noon), true);   // heard since the last push: a new silent spell
 });

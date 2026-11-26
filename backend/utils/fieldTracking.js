@@ -9,7 +9,7 @@
 //   * what a route for one employee on one day looks like (merged trips, distance, gaps)    -> buildRoute
 //   * who may look at it                                                                    -> canViewLocation
 // Every threshold is configurable (setting `field_tracking_config`) but the defaults are strict.
-import { havM } from './fieldTrip.js';
+import { havM, processPoints } from './fieldTrip.js';
 
 export const FT_DEFAULTS = {
   require_duty_day: true,      // tracking may only start on a day the employee is on approved field duty (OD attendance / official gate pass)
@@ -23,7 +23,6 @@ export const FT_DEFAULTS = {
   gap_minutes: 5,              // nothing heard from the phone for this long = tracking gap
   gap_moved_m: 150,            // a gap during which the phone moved at least this far is also counted as estimated distance
   live_stale_minutes: 5,       // a "live" position older than this is shown as offline
-  max_batch: 500,              // points accepted in one upload
   stop_radius_m: 100,          // staying within this distance of where you stopped counts as the same place
   stop_min_minutes: 15,        // a stay at least this long is listed as a stop on the day's route
   long_stop_minutes: 45,       // a stay this long (away from an office) is highlighted as too long in one place
@@ -43,7 +42,7 @@ export const FT_DEFAULTS = {
 
 const LIMITS = {
   max_accuracy_m: [5, 100], first_fix_accuracy_m: [10, 150], geofence_max_accuracy_m: [10, 150], geofence_slack_m: [0, 100], geofence_exit_accuracy_m: [10, 250], geofence_max_event_age_h: [1, 48], device_report_minutes: [1, 60], min_interval_s: [1, 120], max_speed_kmh: [30, 300], max_point_age_h: [1, 72],
-  max_future_s: [0, 600], gap_minutes: [2, 120], gap_moved_m: [20, 2000], live_stale_minutes: [2, 120], max_batch: [10, 1000], max_session_hours: [2, 48], stop_radius_m: [30, 500], stop_min_minutes: [5, 120], long_stop_minutes: [10, 480], checkpoint_minutes: [5, 120],
+  max_future_s: [0, 600], gap_minutes: [2, 120], gap_moved_m: [20, 2000], live_stale_minutes: [2, 120], max_session_hours: [2, 48], stop_radius_m: [30, 500], stop_min_minutes: [5, 120], long_stop_minutes: [10, 480], checkpoint_minutes: [5, 120],
 };
 
 // Anything missing or out of range falls back to the strict default (clamped, never trusted blindly).
@@ -100,8 +99,8 @@ export function screenPoints(incoming, ctx, cfgIn) {
   const cfg = cfgIn || FT_DEFAULTS;
   const now = ctx?.nowMs ?? Date.now();
   const rej = emptyRej();
-  const list = Array.isArray(incoming) ? incoming.slice(0, cfg.max_batch) : [];
-  const overflow = Array.isArray(incoming) ? Math.max(0, incoming.length - cfg.max_batch) : 0;
+  const list = Array.isArray(incoming) ? incoming.slice(0, MAX_UPLOAD) : [];
+  const overflow = Array.isArray(incoming) ? Math.max(0, incoming.length - MAX_UPLOAD) : 0;
   if (overflow) rej.invalid += overflow;
 
   const norm = [];
@@ -115,7 +114,8 @@ export function screenPoints(incoming, ctx, cfgIn) {
 
   const startMs = ctx?.tripStartMs ?? 0;
   let last = ctx?.last && Number.isFinite(Date.parse(ctx.last.t)) ? { lat: ctx.last.lat, lng: ctx.last.lng, tMs: Date.parse(ctx.last.t) } : null;
-  const accepted = [];
+  const accepted = [], late = [];
+  const trail = Array.isArray(ctx?.trail) ? ctx.trail.map(q => ({ lat: q.lat, lng: q.lng, tMs: Date.parse(q.t) })).filter(q => Number.isFinite(q.tMs)).sort((a, b) => a.tMs - b.tMs) : null;
   for (const p of norm) {
     const mock = p.mock === true || p.simulated === true || p.is_mock === true || p.isFromMockProvider === true;
     if (cfg.reject_mock && mock) { rej.mock++; continue; }
@@ -125,7 +125,16 @@ export function screenPoints(incoming, ctx, cfgIn) {
     if (!p.hb) {
       const accLimit = last ? cfg.max_accuracy_m : Math.max(cfg.max_accuracy_m, cfg.first_fix_accuracy_m);
       if (p.acc > accLimit) { rej.accuracy++; continue; }
-      if (last && p.tMs <= last.tMs) { rej.out_of_order++; continue; }
+      if (last && p.tMs <= last.tMs) {
+        // Older than the newest stored point. With the stored trail to hand this is a LATE fix (an offline queue arriving after newer
+        // points, or the phone's two uploaders overtaking each other): it is kept if it fills a hole and fits between its neighbours.
+        const why = trail ? lateFixProblem(p, trail, cfg) : 'out_of_order';
+        if (why) { rej[why]++; continue; }
+        trail.splice(lowerBound(trail, p.tMs), 0, { lat: p.lat, lng: p.lng, tMs: p.tMs });
+        const { tMs: lt, mock: _a, simulated: _b, is_mock: _c, isFromMockProvider: _d, ...lc } = p;
+        late.push({ ...lc, t: new Date(lt).toISOString() });
+        continue;
+      }
       if (last && (p.tMs - last.tMs) / 1000 < cfg.min_interval_s) { rej.interval++; continue; }
       if (last) {
         const dt = Math.max((p.tMs - last.tMs) / 1000, 1);
@@ -137,7 +146,7 @@ export function screenPoints(incoming, ctx, cfgIn) {
     accepted.push({ ...clean, t: new Date(tMs).toISOString() });
   }
   const total = list.length + overflow;
-  return { accepted, rejected: rej, total, rejectedCount: Object.values(rej).reduce((a, b) => a + b, 0) };
+  return { accepted, late, rejected: rej, total, rejectedCount: Object.values(rej).reduce((a, b) => a + b, 0) };
 }
 
 // Running totals of what was refused, kept on the trip so HR can see a phone that keeps sending bad data.
@@ -273,7 +282,9 @@ export function canViewLocation({ viewerId, subjectId, isMgmt, isManager, visibl
 
 /* ── nudging silent sessions ────────────────────────────────────────────── */
 
-export const NUDGE = { QUIET_MIN: 10, EVERY_MIN: 20, MAX: 6, FROM_HOUR: 8, TO_HOUR: 21, WAKE_QUIET_MIN: 2, WAKE_EVERY_MIN: 10, WAKE_MAX: 12 };
+export const NUDGE = { QUIET_MIN: 10, EVERY_MIN: 20, MAX: 6, FROM_HOUR: 8, TO_HOUR: 21, WAKE_QUIET_MIN: 2, WAKE_EVERY_MIN: 10, WAKE_MAX: 80 };
+// the caps count one silent spell: once the phone has been heard again, a later silence is chased afresh
+const spell = (trip, state) => (state && Date.parse(trip?.last_point_at) > state.lastMs ? null : state);
 
 // An active session whose phone has not been heard from recently needs the employee to open the app (the app starts the
 // phone's background recorder, which then keeps going with the screen locked or the app closed). state: { count, lastMs }.
@@ -283,8 +294,8 @@ export function nudgeDue(trip, state, nowMs) {
   if (hour < NUDGE.FROM_HOUR || hour >= NUDGE.TO_HOUR) return false;               // never at night
   const heardMs = Date.parse(trip.last_point_at || trip.start_time);
   if (!Number.isFinite(heardMs) || nowMs - heardMs < NUDGE.QUIET_MIN * 60000) return false;
-  if (state && state.count >= NUDGE.MAX) return false;
   if (state && nowMs - state.lastMs < NUDGE.EVERY_MIN * 60000) return false;
+  if (spell(trip, state)?.count >= NUDGE.MAX) return false;
   return true;
 }
 
@@ -295,8 +306,8 @@ export function wakeDue(trip, state, nowMs) {
   if (hour < NUDGE.FROM_HOUR || hour >= NUDGE.TO_HOUR) return false;
   const heardMs = Date.parse(trip.last_point_at || trip.start_time);
   if (!Number.isFinite(heardMs) || nowMs - heardMs < NUDGE.WAKE_QUIET_MIN * 60000) return false;
-  if (state && state.count >= NUDGE.WAKE_MAX) return false;
   if (state && nowMs - state.lastMs < NUDGE.WAKE_EVERY_MIN * 60000) return false;
+  if (spell(trip, state)?.count >= NUDGE.WAKE_MAX) return false;
   return true;
 }
 
@@ -488,6 +499,7 @@ export function clockOffsetMs(deviceNowIso, serverNowMs, maxMs = 12 * 3600000) {
   const d = Date.parse(deviceNowIso);
   if (!Number.isFinite(d)) return null;
   const off = serverNowMs - d;
+  if (Math.abs(off) < CLOCK_TOLERANCE_MS) return 0;      // that much is upload delay, not a wrong clock: shifting would blur the fix times
   return Math.abs(off) <= maxMs ? off : null;
 }
 
@@ -573,4 +585,125 @@ export function tokenRevoked(data, decoded, nowMs = Date.now()) {
   if (decoded.did && d.dids && d.dids[String(decoded.did)] && d.dids[String(decoded.did)] > nowMs) return true;
   const floor = d.floors && d.floors[decoded.id];
   return !!floor && Number(decoded.iat) * 1000 < floor;
+}
+
+/* ── late uploads ───────────────────────────────────────────────────────── */
+
+export const MAX_UPLOAD = 6000;             // the phone's whole offline queue; nothing it recorded is cut off
+const CLOCK_TOLERANCE_MS = 15000;
+
+function lowerBound(list, ms) { let lo = 0, hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].tMs < ms) lo = m + 1; else hi = m; } return lo; }
+
+// null = this late fix can be inserted; otherwise the name of the rule that refuses it. 'out_of_order' = already have that moment.
+function lateFixProblem(p, trail, cfg) {
+  if (p.acc > cfg.max_accuracy_m) return 'accuracy';
+  const i = lowerBound(trail, p.tMs), before = trail[i - 1], after = trail[i];
+  for (const n of [before, after]) {
+    if (!n) continue;
+    const dt = Math.abs(p.tMs - n.tMs) / 1000;
+    if (dt < cfg.min_interval_s || (dt < 60 && havM(n, p) < 3)) return 'out_of_order';
+    if (havM(n, p) / Math.max(dt, 1) * 3.6 > cfg.max_speed_kmh) return 'speed';
+  }
+  return null;
+}
+
+// Puts late fixes into their place in the trail and works the distance and gaps out again over the whole path.
+export function backfillTrail(trip, late, nowMs) {
+  if (!late || !late.length) return trip;
+  const merged = [...(trip.points || []), ...late].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+  const re = processPoints({ ...trip, points: [], stats: undefined, distance_km: 0, point_count: 0, last_pos: null }, merged, nowMs).trip;
+  const stats = { ...re.stats };
+  for (const k of ['rej_accuracy', 'rej_jump', 'rej_still']) stats[k] = (trip.stats?.[k] || 0) + (stats[k] || 0);
+  return { ...trip, points: re.points, distance_km: re.distance_km, point_count: re.point_count, stats, rev: (trip.rev || 0) + 1 };
+}
+
+/* ── when was the employee at a point on the map? ───────────────────────── */
+
+// nearest position on the segment a-b to p, as a fraction 0..1, with the distance in metres (local flat projection)
+function projectOnSegment(p, a, b) {
+  const kx = 111320 * Math.cos(p.lat * Math.PI / 180), ky = 110540;
+  const ax = (a.lng - p.lng) * kx, ay = (a.lat - p.lat) * ky, bx = (b.lng - p.lng) * kx, by = (b.lat - p.lat) * ky;
+  const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+  const f = len2 ? Math.min(1, Math.max(0, -(ax * dx + ay * dy) / len2)) : 0;
+  return { f, d: Math.hypot(ax + f * dx, ay + f * dy), lat: a.lat + (b.lat - a.lat) * f, lng: a.lng + (b.lng - a.lng) * f };
+}
+
+// trips: one employee's sessions for a day. Returns every pass within radiusM of the clicked point, oldest first. The time is
+// interpolated between the two recorded fixes either side of that spot and says how far it can be trusted:
+//   precise       fixes at most 30 s apart
+//   interpolated  further apart: constant speed between them is assumed
+//   stayed        the phone did not move between two fixes: the employee was there for the whole of from..to
+//   gap           nothing was recorded across this stretch: only "some time between from and to" is known
+export function timeAtPoint(trips, click, radiusM, cfgIn) {
+  const cfg = cfgIn || FT_DEFAULTS;
+  const p = { lat: Number(click?.lat), lng: Number(click?.lng) };
+  if (!Number.isFinite(p.lat) || !Number.isFinite(p.lng)) return { visits: [], radius_m: 0 };
+  const radius = Math.min(300, Math.max(15, Number(radiusM) || 40));
+  const visits = [], gapHits = [];
+  for (const tr of [...(trips || [])].sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)))) {
+    const pts = cleanTrail([...(tr.points || [])].sort((a, b) => Date.parse(a.t) - Date.parse(b.t))).map(q => ({ ...q, ms: Date.parse(q.t) }));
+    if (!pts.length) continue;
+    const beats = (tr.beats || []).map(b => Date.parse(b));
+    const lp = tr.last_pos, tail = pts[pts.length - 1];
+    if (lp && Date.parse(lp.t) > tail.ms && havM(tail, lp) < 40) pts.push({ ...lp, ms: Date.parse(lp.t) });    // still standing there (heartbeats)
+    const segs = pts.length === 1 ? [[pts[0], pts[0]]] : pts.slice(1).map((b, i) => [pts[i], b]);
+    let run = null;
+    const close = () => { if (run) visits.push(finishVisit(run, p, tr.id)); run = null; };
+    segs.forEach(([a, b], i) => {
+      const dt = (b.ms - a.ms) / 1000, moved = havM(a, b), pr = projectOnSegment(p, a, b);
+      const silent = dt > cfg.gap_minutes * 60 && (b.g === 1 || moved >= 40 || !beats.some(x => x > a.ms + 30000 && x < b.ms - 30000));
+      const kind = moved < 40 && dt > 60 && !silent ? 'stayed' : silent || (b.g === 1 && dt > 120) ? 'gap' : dt <= 30 ? 'precise' : 'interpolated';
+      if (pr.d > radius) {
+        if (kind === 'gap' && havM(a, p) + havM(p, b) <= 1.3 * moved + 300) gapHits.push(finishVisit([{ i, a, b, dt, kind, pr }], p, tr.id));
+        close(); return;
+      }
+      const hit = { i, a, b, dt, kind, pr };
+      if (run && a.ms - run[run.length - 1].b.ms <= 60000) run.push(hit); else { close(); run = [hit]; }
+    });
+    close();
+  }
+  const out = visits.length ? visits : gapHits;
+  return { radius_m: radius, visits: out.sort((x, y) => x.at.localeCompare(y.at)) };
+}
+
+function finishVisit(run, p, tripId) {
+  const best = run.reduce((m, h) => (h.pr.d < m.pr.d ? h : m), run[0]);
+  const timeAt = (h) => Math.round(h.a.ms + (h.b.ms - h.a.ms) * h.pr.f);
+  const stay = run.filter(h => h.kind === 'stayed');
+  const uncertain = best.kind === 'gap';
+  const fromMs = uncertain ? best.a.ms : stay.length ? Math.min(stay[0].a.ms, timeAt(run[0])) : timeAt(run[0]);
+  const toMs = uncertain ? best.b.ms : stay.length ? Math.max(stay[stay.length - 1].b.ms, timeAt(run[run.length - 1])) : timeAt(run[run.length - 1]);
+  const kind = uncertain ? 'gap' : stay.length && toMs - fromMs >= 120000 ? 'stayed' : best.kind === 'stayed' ? 'interpolated' : best.kind;
+  const near = havM(best.a, p) <= havM(best.b, p) ? best.a : best.b;
+  const at = timeAt(best);
+  return {
+    trip_id: tripId, kind, at: new Date(at).toISOString(), from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString(),
+    uncertainty_s: uncertain ? Math.round(best.dt / 2) : Math.max(1, Math.round(Math.min(at - best.a.ms, best.b.ms - at) / 1000)),
+    distance_m: Math.round(best.pr.d), lat: best.pr.lat, lng: best.pr.lng,
+    nearest_fix: { t: new Date(near.ms).toISOString(), lat: near.lat, lng: near.lng, acc: Math.round(Number(near.acc) || 0), distance_m: Math.round(havM(near, p)) },
+  };
+}
+
+/* ── is each eligible employee actually sending data? ───────────────────── */
+
+// { state, text } for one eligible employee: trip = the open session (or null), device = the phone's last status report (or null).
+export function sendingStatus({ trip, device, hasAndroidApp }, nowMs, cfgIn) {
+  const cfg = cfgIn || FT_DEFAULTS;
+  const probs = device?.problems || [];
+  const web = device?.platform === 'web';
+  const fix = !device && !hasAndroidApp ? 'has never opened Maxvolt One on a phone'
+    : probs.includes('location_denied') ? 'location permission is off' + (web ? ' (using the website, not the app)' : '')
+    : probs.includes('gps_off') ? 'GPS is switched off'
+    : probs.includes('background_location_denied') ? 'location is not "Allow all the time"'
+    : probs.includes('battery_restricted') ? 'battery optimisation is on'
+    : web && !hasAndroidApp ? 'uses the website: it cannot record once the screen is off (needs the app)'
+    : '';
+  if (!trip) return { state: 'off_duty', text: fix ? 'Not on duty · ' + fix : 'Not on duty', attention: !!fix };
+  const heard = Date.parse(trip.last_point_at);
+  if (Number.isFinite(heard) && nowMs - heard <= cfg.live_stale_minutes * 60000 && (trip.points || []).length) return { state: 'sending', text: 'Sending location', attention: false };
+  const age = Number.isFinite(heard) ? Math.round((nowMs - heard) / 60000) : null;
+  return {
+    state: 'not_sending', attention: true,
+    text: (age == null ? 'On duty, nothing received' : 'On duty, nothing for ' + (age >= 60 ? Math.floor(age / 60) + ' h ' + (age % 60) + ' min' : age + ' min')) + ' · ' + (fix || 'ask them to open the app (Android may have stopped it)'),
+  };
 }

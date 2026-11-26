@@ -196,7 +196,7 @@ export async function flushNow() {
   if (!buffer.length || !currentTripId || flushing) return null;
   flushing = true;
   const tripId = currentTripId;
-  const points = buffer.splice(0, buffer.length);
+  const points = buffer.splice(0, 300);   // a long offline queue goes up in pieces, oldest first
   try {
     const res = await base44.functions.invoke('logFieldPoints', { trip_id: tripId, points, device_now: new Date().toISOString() });
     const d = res.data || res;
