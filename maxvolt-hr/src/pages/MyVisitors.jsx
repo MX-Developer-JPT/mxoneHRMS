@@ -375,7 +375,7 @@ export default function MyVisitors() {
                           {(v.visitor_count || 1) > 1 && <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" />{v.visitor_count} people</span>}
                           {v.vehicle_number && <span className="inline-flex items-center gap-1"><Car className="w-3 h-3" />{v.vehicle_number}</span>}
                         </p>
-                        <p className="text-xs text-gray-500 mt-0.5">{v.purpose}{tab === 'mine' ? ` · Host: ${v.host_name}` : ` · Invited by: ${v.created_by_name}`}</p>
+                        <p className="text-xs text-gray-500 mt-0.5">{v.purpose}{tab === 'mine' ? ` · Host: ${v.host_name || empName(v.host_user_id) || (v.host_user_id === user?.id ? user?.full_name : '') || '—'}` : ` · Invited by: ${v.created_by_name}`}</p>
                         {v.status === 'checked_in' && v.check_in_time && (
                           <p className="text-xs text-green-600 mt-0.5">Checked in at {safeTime(v.check_in_time)}</p>
                         )}

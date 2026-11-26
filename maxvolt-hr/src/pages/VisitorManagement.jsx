@@ -139,10 +139,11 @@ export default function VisitorManagement() {
 
   const empName = (uid) => employees.find(e => e.user_id === uid)?.display_name || '';
 
-  const isOverdue = (v) => v.status === 'checked_in' && v.expected_departure && istDate(v.expected_departure) < istNow();
+  // Overdue: past the expected departure — or, for walk-ins that have none, still "inside" from a previous day (never checked out).
+  const isOverdue = (v) => v.status === 'checked_in' && ((v.expected_departure && istDate(v.expected_departure) < istNow()) || (!v.expected_departure && (v.check_in_time || '').slice(0, 10) < todayStr()));
 
   const todaysVisitors = useMemo(() => visitors.filter(v => (v.expected_arrival || '').slice(0, 10) === todayStr() || (v.check_in_time || '').slice(0, 10) === todayStr()), [visitors]);
-  const expectedVisitors = useMemo(() => visitors.filter(v => v.status === 'approved'), [visitors]);
+  const expectedVisitors = useMemo(() => visitors.filter(v => v.status === 'approved' && (v.expected_arrival || '').slice(0, 10) >= todayStr()), [visitors]);   // approved visits from past days that never arrived are no longer "expected"
   const pendingApprovals = useMemo(() => visitors.filter(v => v.status === 'pending_approval'), [visitors]);
   const currentlyInside = useMemo(() => visitors.filter(v => v.status === 'checked_in'), [visitors]);
   const overdueVisitors = useMemo(() => currentlyInside.filter(isOverdue), [currentlyInside]);
