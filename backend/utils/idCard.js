@@ -33,11 +33,11 @@ const DETAIL_BASE = [143.7, 152.8, 161.8, 170.8];   // Employee ID, D.O.J., Depa
 // transparent background (cut-out person, like the sample) uses the tall box so the shoulders reach
 // down behind the details, exactly like the approved card.
 const PHOTO_X = 84, PHOTO_W = 71.9;
-const PHOTO_BOX = { top: 38.4, bottom: 134 };
-const PHOTO_BOX_CUTOUT = { top: 38.4, bottom: 171 };
+const PHOTO_BOX = { top: 38.4, bottom: 156.5 };   // the body runs down to the orange tail on the right, as on the approved card
+const PHOTO_BOX_CUTOUT = PHOTO_BOX;   // cut-outs use the same frame: the person stands behind the orange shapes, never over them
 // A rectangular photo must not run over the orange shape: its lower-left corner is cut along the shape's
 // slanted top edge (measured from the template: (84,111.2) -> (131,155.8), 0.6 pt clear of it).
-const PHOTO_CLIP = [[84, 110.6], [84, 38.4], [PHOTO_X + PHOTO_W, 38.4], [PHOTO_X + PHOTO_W, 134], [108.1, 134]];
+const PHOTO_CLIP = [[84, 110.6], [84, 38.4], [PHOTO_X + PHOTO_W, 38.4], [PHOTO_X + PHOTO_W, 156.5], [131.3, 156.5], [131.3, 155]];   // ends at the orange shape's right-hand vertex (131, 155.8)
 const LOGO_CLIP_H = 46;              // top strip of the template that holds the logo + tagline
 
 let _cache;
@@ -361,12 +361,14 @@ export async function buildIdCardsPdf(cards, { emergency_no = '', sides = 'front
 
     // Photo first, so the text is always drawn on top of it.
     const photo = fromPrepared(await recutPhoto(card.photo_prepared, 'portrait'));
+    if (photo) {   // photos saved before the frame was made taller: re-fit them instead of stretching
+      const want = (PHOTO_W) / (photo.box.bottom - photo.box.top), m = await sharp(photo.bytes).metadata();
+      if (Math.abs(m.width / m.height - want) > 0.01) { const tw = Math.round(PHOTO_W * 8), th = Math.round((photo.box.bottom - photo.box.top) * 8); photo.bytes = photo.type === 'png' ? await cutoutFit(photo.bytes, tw, th) : await coverCropTop(photo.bytes, tw, th, 0); }
+    }
     if (photo) {
       const img = photo.type === 'png' ? await out.embedPng(photo.bytes) : await out.embedJpg(photo.bytes);
       const imgOpts = { x: PHOTO_X, y: H - photo.box.bottom, width: PHOTO_W, height: photo.box.bottom - photo.box.top };
-      if (photo.cutout) {
-        page.drawImage(img, imgOpts); // transparent cut-out: the person may sit over the orange, as in the sample card
-      } else {
+      {   // clipped to the area right of the orange shape's slanted edge, so the orange stays in front of the person
         const pts = PHOTO_CLIP.map(([x, y]) => [x, H - y]);
         page.pushOperators(pushGraphicsState(), moveTo(pts[0][0], pts[0][1]), ...pts.slice(1).map(([x, y]) => lineTo(x, y)), closePath(), clip(), endPath());
         page.drawImage(img, imgOpts);
