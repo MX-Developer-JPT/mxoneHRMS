@@ -6,6 +6,8 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.location.LocationManager;
+import android.os.Build;
 import android.util.Log;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -60,7 +62,24 @@ public class FieldDutyWatchdog extends BroadcastReceiver {
         }).start();
     }
 
+    // Office arrivals / departures that could not be sent, and the office fences Android forgets when location is switched off.
+    private static void geofenceUpkeep(Context app) {
+        try {
+            com.equimaps.capacitor_background_geolocation.GeoOutbox.flushAsync(app);
+            LocationManager lm = (LocationManager) app.getSystemService(Context.LOCATION_SERVICE);
+            if (lm == null) return;
+            boolean on = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? lm.isLocationEnabled() : lm.isProviderEnabled(LocationManager.GPS_PROVIDER);
+            SharedPreferences p = app.getSharedPreferences("maxvolt_watchdog", Context.MODE_PRIVATE);
+            if (!on) p.edit().putBoolean("location_was_off", true).apply();
+            else if (p.getBoolean("location_was_off", false)) {
+                com.equimaps.capacitor_background_geolocation.GeofenceReceiver.refresh(app);
+                p.edit().putBoolean("location_was_off", false).apply();
+            }
+        } catch (Exception e) { Log.w(TAG, "geofence upkeep failed: " + e); }
+    }
+
     private static void check(Context app) throws Exception {
+        geofenceUpkeep(app);
         if (FieldDutyWake.isRecording(app)) {
             Log.i(TAG, "session recording: making sure the location service runs");
             FieldDutyWake.startService(app);

@@ -297,7 +297,7 @@ index a92fcf9..6410a56 100644
      }
  
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..7d615f0 100644
+index fafbb86..ef7472b 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -361,7 +361,7 @@ index fafbb86..7d615f0 100644
      private final IBinder binder = new LocalBinder();
  
      // Must be unique for this application.
-@@ -42,22 +76,127 @@ public class BackgroundGeolocationService extends Service {
+@@ -42,22 +76,128 @@ public class BackgroundGeolocationService extends Service {
      }
      private HashSet<Watcher> watchers = new HashSet<Watcher>();
  
@@ -384,6 +384,7 @@ index fafbb86..7d615f0 100644
 +    // far from every office the service drops to a low-power profile (network/wifi, 30 m movement, batched) and returns to precise the
 +    // moment the phone moves. See updateHeadlessProfile().
 +    private volatile boolean headlessEco = false;
++    private long lastOutboxFlush = 0;
 +    private volatile boolean headlessTripProfile = false;   // the current location request was built for a trip
 +    private long headlessProfileAt = 0;
 +    private long headlessLastMoveMs = 0;
@@ -494,7 +495,7 @@ index fafbb86..7d615f0 100644
          return false;
      }
  
-@@ -77,6 +216,10 @@ public class BackgroundGeolocationService extends Service {
+@@ -77,6 +217,10 @@ public class BackgroundGeolocationService extends Service {
                  Notification backgroundNotification,
                  float distanceFilter
          ) {
@@ -505,7 +506,7 @@ index fafbb86..7d615f0 100644
              FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
                      BackgroundGeolocationService.this
              );
-@@ -90,6 +233,8 @@ public class BackgroundGeolocationService extends Service {
+@@ -90,6 +234,8 @@ public class BackgroundGeolocationService extends Service {
                  @Override
                  public void onLocationResult(LocationResult locationResult) {
                      Location location = locationResult.getLastLocation();
@@ -514,7 +515,7 @@ index fafbb86..7d615f0 100644
                      Intent intent = new Intent(ACTION_BROADCAST);
                      intent.putExtra("location", location);
                      intent.putExtra("id", id);
-@@ -136,6 +281,7 @@ public class BackgroundGeolocationService extends Service {
+@@ -136,6 +282,7 @@ public class BackgroundGeolocationService extends Service {
                      // permission bugs, so we prevent any exceptions from
                      // crashing the app. See issue #86.
                      startForeground(NOTIFICATION_ID, backgroundNotification);
@@ -522,7 +523,7 @@ index fafbb86..7d615f0 100644
                  } catch (Exception exception) {
                      Logger.error("Failed to foreground service", exception);
                  }
-@@ -147,7 +293,13 @@ public class BackgroundGeolocationService extends Service {
+@@ -147,7 +294,13 @@ public class BackgroundGeolocationService extends Service {
                  if (watcher.id.equals(id)) {
                      watcher.client.removeLocationUpdates(watcher.locationCallback);
                      watchers.remove(watcher);
@@ -537,7 +538,7 @@ index fafbb86..7d615f0 100644
                          stopForeground(true);
                      }
                      return;
-@@ -168,8 +320,487 @@ public class BackgroundGeolocationService extends Service {
+@@ -168,8 +321,443 @@ public class BackgroundGeolocationService extends Service {
              }
          }
  
@@ -611,6 +612,11 @@ index fafbb86..7d615f0 100644
 +        headlessFixCount = 0;
 +
 +        headlessActive = true;
++        GeoOutbox.listener = (event, accepted, detail) -> {
++            // a refused arrival (too inaccurate, outside the boundary) must be tried again with a later fix
++            if (!accepted && "enter".equals(event)) { headlessLastKnownInProgress = false; headlessGeofenceOwned = false; headlessCurrentFenceId = null; headlessEnterStreak = 0; }
++        };
++        GeoOutbox.flushAsync(this);
 +        headlessCurrentFenceId = null;
 +        headlessLastKnownInProgress = null;
 +        headlessGeofenceOwned = false;
@@ -630,6 +636,7 @@ index fafbb86..7d615f0 100644
 +                    return;
 +                }
 +                if (location != null) {
++                    if (System.currentTimeMillis() - lastOutboxFlush > 30000) { lastOutboxFlush = System.currentTimeMillis(); GeoOutbox.flushAsync(getApplicationContext()); }
 +                    TripRecorder.onFix(getApplicationContext(), location);
 +                    handleHeadlessLocation(location, token, fencesJson, apiBase);
 +                }
@@ -803,8 +810,8 @@ index fafbb86..7d615f0 100644
 +        } catch (Exception e) {
 +            // never end up with no location updates at all: fall back to precise
 +            try { headlessClient.requestLocationUpdates(buildHeadlessRequest(false), headlessCallback, android.os.Looper.getMainLooper()); headlessEco = false; } catch (Exception ignored) { /* the service restarts on the next trigger */ }
-         }
-     }
++        }
++    }
 +
 +    private void handleHeadlessLocation(Location location, String token, String fencesJson, String apiBase) {
 +        headlessFixCount++;
@@ -950,88 +957,38 @@ index fafbb86..7d615f0 100644
 +        return 2 * R * Math.asin(Math.sqrt(a));
 +    }
 +
-+    // Fires the same idempotent nativeGeofenceEvent endpoint the JS path uses
-+    // (backend/routes/functions.js), so re-detecting an already-handled
-+    // enter/exit on the next boot/task-removal is harmless. Runs off the main
-+    // thread — network calls are not permitted there.
++    // Saved first, then sent (GeoOutbox): an arrival or departure with no network is delivered later with the time it happened.
++    // The engine takes the crossing as done at once, so the next fix does not raise it again; a refused arrival is retried.
 +    private void postGeofenceEvent(
 +            final String event, final Location location, final JSONObject fence,
 +            final String token, final String apiBase
 +    ) {
-+        final boolean isMock = location.isFromMockProvider();
-+        final double lat = location.getLatitude();
-+        final double lon = location.getLongitude();
-+        final boolean hasAccuracy = location.hasAccuracy();
-+        final float accuracy = location.getAccuracy();
-+        final long time = location.getTime();
-+
-+        new Thread(() -> {
-+            HttpURLConnection conn = null;
-+            try {
-+                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
-+                sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
-+
-+                JSONObject body = new JSONObject();
-+                body.put("event", event);
-+                body.put("latitude", lat);
-+                body.put("longitude", lon);
-+                body.put("accuracy", hasAccuracy ? accuracy : JSONObject.NULL);
-+                body.put("occurred_at", sdf.format(new Date(time)));
-+                body.put("location_name", fence.getString("name"));
-+                body.put("is_mock", isMock);
-+                body.put("device_id", "capacitor-background-geolocation-headless");
-+                body.put("source", "native_android");
-+
-+                URL url = new URL(apiBase + "/api/functions/nativeGeofenceEvent");
-+                conn = (HttpURLConnection) url.openConnection();
-+                conn.setRequestMethod("POST");
-+                conn.setRequestProperty("Content-Type", "application/json");
-+                conn.setRequestProperty("Authorization", "Bearer " + token);
-+                conn.setConnectTimeout(15000);
-+                conn.setReadTimeout(15000);
-+                conn.setDoOutput(true);
-+                try (OutputStream os = conn.getOutputStream()) {
-+                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
-+                }
-+                int code = conn.getResponseCode();
-+                diag("POST " + event + " -> HTTP " + code);
-+                if (code >= 200 && code < 300) {
-+                    String action = "";
-+                    try {
-+                        java.io.InputStream is = conn.getInputStream();
-+                        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
-+                        byte[] buf = new byte[1024];
-+                        int n;
-+                        while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
-+                        action = new JSONObject(bos.toString("UTF-8")).optString("action", "");
-+                    } catch (Exception ignored) {}
-+                    diag("  server action=" + action);
-+                    if ("enter".equals(event)) {
-+                        headlessLastKnownInProgress = true;
-+                        // Only a session this ENTER actually opened may be auto-closed later; an
-+                        // "already checked in" answer means a manual/biometric session owns the day.
-+                        if ("checked_in".equals(action) || "location_transfer".equals(action)) headlessGeofenceOwned = true;
-+                    } else if ("exit".equals(event)) {
-+                        headlessLastKnownInProgress = false; headlessGeofenceOwned = false;
-+                    }
-+                } else {
-+                    Logger.debug("Headless geofence event failed, HTTP " + code);
-+                }
-+            } catch (Exception e) {
-+                Logger.error("Headless geofence POST failed", e);
-+                diag("POST " + event + " FAILED: " + e);
-+            } finally {
-+                if (conn != null) conn.disconnect();
-+            }
-+        }).start();
-+    }
++        try {
++            JSONObject body = new JSONObject();
++            body.put("event", event);
++            body.put("latitude", location.getLatitude());
++            body.put("longitude", location.getLongitude());
++            body.put("accuracy", location.hasAccuracy() ? (double) location.getAccuracy() : JSONObject.NULL);
++            body.put("location_name", fence.getString("name"));
++            body.put("is_mock", location.isFromMockProvider());
++            body.put("device_id", "capacitor-background-geolocation-headless");
++            body.put("source", "native_android");
++            boolean enter = "enter".equals(event);
++            headlessLastKnownInProgress = enter;
++            headlessGeofenceOwned = enter;      // the server only lets an exit close a session the geofence opened
++            GeoOutbox.add(getApplicationContext(), body);
++            GeoOutbox.flushAsync(getApplicationContext());
++        } catch (Exception e) {
++            diag("geofence " + event + " could not be recorded: " + e);
+         }
+     }
  }
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
 new file mode 100644
-index 0000000..c08915a
+index 0000000..c2c0f7d
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BootReceiver.java
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,56 @@
 +package com.equimaps.capacitor_background_geolocation;
 +
 +import android.content.BroadcastReceiver;
@@ -1061,6 +1018,7 @@ index 0000000..c08915a
 +        );
 +        boolean geofenceActive = prefs.getBoolean(BackgroundGeolocationService.PREF_TRACKING_ACTIVE, false);
 +        boolean tripActive = TripRecorder.isActive(context);
++        GeoOutbox.flushAsync(context);   // arrivals / departures still waiting from before the restart
 +        if (!geofenceActive && !tripActive) return;
 +        BackgroundGeolocationService.diagLog(context, "restart after " + (Intent.ACTION_MY_PACKAGE_REPLACED.equals(action) ? "app update" : "reboot") + " (geofence=" + geofenceActive + ", trip=" + tripActive + ")");
 +
@@ -1087,12 +1045,186 @@ index 0000000..c08915a
 +        }
 +    }
 +}
+diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeoOutbox.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeoOutbox.java
+new file mode 100644
+index 0000000..efd521e
+--- /dev/null
++++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeoOutbox.java
+@@ -0,0 +1,168 @@
++package com.equimaps.capacitor_background_geolocation;
++
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.os.SystemClock;
++import android.provider.Settings;
++
++import org.json.JSONArray;
++import org.json.JSONObject;
++
++import java.io.ByteArrayOutputStream;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++import java.text.SimpleDateFormat;
++import java.util.Date;
++import java.util.Locale;
++import java.util.TimeZone;
++import java.util.UUID;
++
++// Office arrivals and departures detected with the app closed are written to disk first and sent from there, oldest first, until the
++// server answers. Before this, an event raised with no network (basement, lift, dead zone) was simply lost, and one retried later was
++// stamped with the time it finally got through. Each event carries how long ago it happened, measured by the phone's own
++// since-boot clock, and the server counts back from ITS clock - so changing the phone's time cannot move a punch.
++public final class GeoOutbox {
++    private static final String KEY = "geo_outbox";
++    private static final int MAX = 50;
++    private static final long MAX_AGE_MS = 6L * 3600_000L;   // the server refuses older events
++    private static final Object LOCK = new Object();
++    private static boolean sending = false;
++
++    // Tells the running service when the server refused an arrival, so that it tries again with a later fix.
++    interface Listener { void onResult(String event, boolean accepted, String detail); }
++    static volatile Listener listener = null;
++
++    private GeoOutbox() {}
++
++    private static SharedPreferences prefs(Context c) {
++        return c.getApplicationContext().getSharedPreferences(BackgroundGeolocationService.HEADLESS_PREFS, Context.MODE_PRIVATE);
++    }
++
++    private static int bootCount(Context c) {
++        try { return Settings.Global.getInt(c.getContentResolver(), Settings.Global.BOOT_COUNT); } catch (Exception e) { return -1; }
++    }
++
++    private static JSONArray load(Context c) {
++        try { return new JSONArray(prefs(c).getString(KEY, "[]")); } catch (Exception e) { return new JSONArray(); }
++    }
++
++    private static void save(Context c, JSONArray a) { prefs(c).edit().putString(KEY, a.toString()).commit(); }
++
++    // body: the nativeGeofenceEvent fields (without times). Ignored when the same event for the same office is already waiting.
++    static void add(Context c, JSONObject body) {
++        try {
++            synchronized (LOCK) {
++                JSONArray q = load(c);
++                for (int i = 0; i < q.length(); i++) {
++                    JSONObject b = q.getJSONObject(i).getJSONObject("body");
++                    if (i == q.length() - 1 && b.optString("event").equals(body.optString("event")) && b.optString("location_name").equals(body.optString("location_name"))) return;
++                }
++                body.put("event_id", UUID.randomUUID().toString());
++                JSONObject item = new JSONObject();
++                item.put("body", body);
++                item.put("wall", System.currentTimeMillis());
++                item.put("elapsed", SystemClock.elapsedRealtime());
++                item.put("boot", bootCount(c));
++                q.put(item);
++                while (q.length() > MAX) q.remove(0);
++                save(c, q);
++            }
++        } catch (Exception e) {
++            BackgroundGeolocationService.diagLog(c, "geofence event could not be saved: " + e);
++        }
++    }
++
++    public static int waiting(Context c) { return load(c).length(); }
++
++    public static void flushAsync(final Context c) {
++        final Context app = c.getApplicationContext();
++        if (waiting(app) == 0) return;
++        new Thread(new Runnable() { public void run() { flush(app); } }).start();
++    }
++
++    // Blocking. One sender at a time; stops at the first event that cannot be delivered, so the order is kept.
++    static void flush(Context c) {
++        synchronized (LOCK) {
++            if (sending) return;
++            sending = true;
++        }
++        try {
++            SharedPreferences p = prefs(c);
++            for (int round = 0; round < MAX; round++) {
++                JSONObject item;
++                synchronized (LOCK) {
++                    JSONArray q = load(c);
++                    if (q.length() == 0) return;
++                    item = q.getJSONObject(0);
++                }
++                String token = p.getString(BackgroundGeolocationService.PREF_AUTH_TOKEN, null);
++                String api = p.getString(BackgroundGeolocationService.PREF_API_BASE, null);
++                if (token == null || api == null) return;
++                long now = System.currentTimeMillis();
++                boolean sameBoot = item.optInt("boot", -2) == bootCount(c) && SystemClock.elapsedRealtime() >= item.optLong("elapsed");
++                long age = Math.max(0, sameBoot ? SystemClock.elapsedRealtime() - item.optLong("elapsed") : now - item.optLong("wall"));
++                JSONObject body = item.getJSONObject("body");
++                String event = body.optString("event");
++                if (age <= MAX_AGE_MS) {
++                    SimpleDateFormat iso = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
++                    iso.setTimeZone(TimeZone.getTimeZone("UTC"));
++                    JSONObject send = new JSONObject(body.toString());
++                    send.put("occurred_at", iso.format(new Date(now - age)));
++                    send.put("device_now", iso.format(new Date(now)));
++                    String resp = post(api + "/api/functions/nativeGeofenceEvent", token, send.toString());
++                    if (resp == null) {
++                        BackgroundGeolocationService.diagLog(c, "geofence " + event + " waiting: no connection or sign-in expired");
++                        return;
++                    }
++                    JSONObject r = new JSONObject(resp);
++                    boolean ok = r.optBoolean("success", false);
++                    String detail = ok ? r.optString("action", "") : r.optString("code", r.optString("error", ""));
++                    BackgroundGeolocationService.diagLog(c, "geofence " + event + " -> " + (ok ? "" : "refused ") + detail);
++                    Listener l = listener;
++                    if (l != null) l.onResult(event, ok, detail);
++                } else {
++                    BackgroundGeolocationService.diagLog(c, "geofence " + event + " dropped: older than the server accepts");
++                }
++                synchronized (LOCK) {
++                    JSONArray q = load(c);
++                    if (q.length() > 0 && q.getJSONObject(0).getJSONObject("body").optString("event_id").equals(body.optString("event_id"))) q.remove(0);
++                    save(c, q);
++                }
++            }
++        } catch (Exception e) {
++            BackgroundGeolocationService.diagLog(c, "geofence outbox error: " + e);
++        } finally {
++            synchronized (LOCK) { sending = false; }
++        }
++    }
++
++    // The response body of a 2xx answer, otherwise null (keep the event and try again).
++    private static String post(String url, String token, String json) {
++        HttpURLConnection conn = null;
++        try {
++            conn = (HttpURLConnection) new URL(url).openConnection();
++            conn.setRequestMethod("POST");
++            conn.setRequestProperty("Content-Type", "application/json");
++            conn.setRequestProperty("Authorization", "Bearer " + token);
++            conn.setConnectTimeout(8000);
++            conn.setReadTimeout(12000);
++            conn.setDoOutput(true);
++            try (OutputStream os = conn.getOutputStream()) { os.write(json.getBytes(StandardCharsets.UTF_8)); }
++            int code = conn.getResponseCode();
++            if (code < 200 || code >= 300) return null;
++            InputStream is = conn.getInputStream();
++            ByteArrayOutputStream bos = new ByteArrayOutputStream();
++            byte[] buf = new byte[1024];
++            int n;
++            while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
++            return bos.toString("UTF-8");
++        } catch (Exception e) {
++            return null;
++        } finally {
++            if (conn != null) conn.disconnect();
++        }
++    }
++}
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java
 new file mode 100644
-index 0000000..2a650fb
+index 0000000..b65071c
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/GeofenceReceiver.java
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,185 @@
 +package com.equimaps.capacitor_background_geolocation;
 +
 +import android.Manifest;
@@ -1114,17 +1246,8 @@ index 0000000..2a650fb
 +import org.json.JSONArray;
 +import org.json.JSONObject;
 +
-+import java.io.InputStream;
-+import java.io.OutputStream;
-+import java.net.HttpURLConnection;
-+import java.net.URL;
-+import java.nio.charset.StandardCharsets;
-+import java.text.SimpleDateFormat;
 +import java.util.ArrayList;
-+import java.util.Date;
 +import java.util.List;
-+import java.util.Locale;
-+import java.util.TimeZone;
 +
 +// Operating-system level geofencing (Google Play services GeofencingClient).
 +//
@@ -1136,6 +1259,9 @@ index 0000000..2a650fb
 +//
 +// Fences + login are the ones the JS side persisted via persistHeadlessState().
 +public class GeofenceReceiver extends BroadcastReceiver {
++    /** Puts the office fences back (Android drops them when location is switched off). */
++    public static void refresh(Context ctx) { register(ctx); }
++
 +    static final String ACTION = "com.equimaps.capacitor_background_geolocation.GEOFENCE_EVENT";
 +
 +    static PendingIntent pendingIntent(Context ctx) {
@@ -1269,64 +1395,19 @@ index 0000000..2a650fb
 +        }
 +        BackgroundGeolocationService.diagLog(ctx, "OS geofence " + (enter ? "ENTER" : "EXIT") + " " + fence.optString("name"));
 +
-+        if (!enter) {
-+            // Only auto-close a session this geofence opened — never a manual / biometric / WFH one.
-+            String state = post(apiBase + "/api/functions/getMyGeofence", token, "{}");
-+            JSONObject att = state == null ? null : new JSONObject(state).optJSONObject("attendance_today");
-+            if (att == null || !att.optBoolean("is_in_progress", false) || !att.optBoolean("open_session_by_geofence", false)) {
-+                BackgroundGeolocationService.diagLog(ctx, "  exit skipped (no geofence-opened session is open)");
-+                return;
-+            }
-+        }
-+
-+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
-+        sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
++        // An exit is sent as well: the server closes the day only when the open session was opened by the geofence. (Asking the server
++        // first meant that a departure with no network was thrown away.)
 +        JSONObject body = new JSONObject();
 +        body.put("event", enter ? "enter" : "exit");
-+        double lat = loc != null ? loc.getLatitude() : fence.getDouble("latitude");
-+        double lon = loc != null ? loc.getLongitude() : fence.getDouble("longitude");
-+        body.put("latitude", lat);
-+        body.put("longitude", lon);
++        body.put("latitude", loc != null ? loc.getLatitude() : fence.getDouble("latitude"));
++        body.put("longitude", loc != null ? loc.getLongitude() : fence.getDouble("longitude"));
 +        body.put("accuracy", loc != null && loc.hasAccuracy() ? (double) loc.getAccuracy() : JSONObject.NULL);
-+        body.put("occurred_at", sdf.format(new Date()));
 +        body.put("location_name", fence.getString("name"));
 +        body.put("is_mock", loc != null && loc.isFromMockProvider());
 +        body.put("device_id", "android-os-geofence");
 +        body.put("source", "native_android");
-+        String resp = post(apiBase + "/api/functions/nativeGeofenceEvent", token, body.toString());
-+        String action = "";
-+        try { if (resp != null) action = new JSONObject(resp).optString("action", new JSONObject(resp).optString("reason", "")); } catch (Exception ignored) {}
-+        BackgroundGeolocationService.diagLog(ctx, "  server: " + (resp == null ? "NO RESPONSE (will retry on next crossing)" : action));
-+    }
-+
-+    /** Minimal blocking POST; returns the response body or null on failure. Retries once. */
-+    private static String post(String url, String token, String json) {
-+        for (int attempt = 0; attempt < 2; attempt++) {
-+            HttpURLConnection conn = null;
-+            try {
-+                conn = (HttpURLConnection) new URL(url).openConnection();
-+                conn.setRequestMethod("POST");
-+                conn.setRequestProperty("Content-Type", "application/json");
-+                conn.setRequestProperty("Authorization", "Bearer " + token);
-+                conn.setConnectTimeout(15000);
-+                conn.setReadTimeout(15000);
-+                conn.setDoOutput(true);
-+                try (OutputStream os = conn.getOutputStream()) { os.write(json.getBytes(StandardCharsets.UTF_8)); }
-+                int code = conn.getResponseCode();
-+                if (code < 200 || code >= 300) { Thread.sleep(1500); continue; }
-+                InputStream is = conn.getInputStream();
-+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
-+                byte[] buf = new byte[1024];
-+                int n;
-+                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
-+                return bos.toString("UTF-8");
-+            } catch (Exception e) {
-+                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
-+            } finally {
-+                if (conn != null) conn.disconnect();
-+            }
-+        }
-+        return null;
++        GeoOutbox.add(ctx, body);
++        GeoOutbox.flush(ctx);
 +    }
 +}
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java
