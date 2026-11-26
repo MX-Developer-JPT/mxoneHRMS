@@ -1084,22 +1084,9 @@ function buildConsentFormPdf(data) {
   });
 }
 
-// Serialises geofence events per employee. Reads-then-writes of the day's
-// Attendance row aren't atomic, so two near-simultaneous events (a retried
-// request overlapping the original, or an in-app and a headless-native event)
-// could both pass the "not already in progress" check and double-punch.
-const _geoLocks = new Map();
 import { keyedLock } from '../utils/keyedLock.js';
+import { regularisedTimes, originalPunches, canContinuePreviousDay, feedStatus } from '../utils/attendanceRules.js';
 import { revokeAllDeviceTokens, revokeDeviceToken, isDeviceTokenRevoked } from '../utils/deviceTokens.js';
-async function acquireGeoLock(key) {
-  const prev = _geoLocks.get(key) || Promise.resolve();
-  let release;
-  const next = new Promise(r => { release = r; });
-  const chain = prev.then(() => next);
-  _geoLocks.set(key, chain);
-  await prev;
-  return () => { release(); if (_geoLocks.get(key) === chain) _geoLocks.delete(key); };
-}
 
 const router = Router();
 
@@ -4847,7 +4834,7 @@ router.post('/:name', async (req, res) => {
 
     case 'nativeGeofenceEvent': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const ngRelease = await acquireGeoLock(cu.id);
+      const ngRelease = await keyedLock('att:' + cu.id);   // shared with selfie and machine punches: one writer per person at a time
       try {
       const { event, latitude, longitude, accuracy, occurred_at, location_name, is_mock, device_id, source, event_id } = p;
       if (!['enter', 'exit'].includes(event)) return res.json({ success: false, error: "event must be 'enter' or 'exit'" });
@@ -4958,7 +4945,7 @@ router.post('/:name', async (req, res) => {
       if (!ngAttRow && event === 'exit') {
         const ngYest = new Date(new Date(evDate + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
         const ngPrevRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, ngYest]);
-        if (ngPrevRow && JSON.parse(ngPrevRow.data).is_in_progress) { ngAttRow = ngPrevRow; ngAttDate = ngYest; }
+        if (ngPrevRow && canContinuePreviousDay({ date: ngYest, ...JSON.parse(ngPrevRow.data) }, ngTime.toISOString())) { ngAttRow = ngPrevRow; ngAttDate = ngYest; }
       }
       const ngAtt = ngAttRow ? JSON.parse(ngAttRow.data) : null;
       if (ngAtt?.status === 'regularised' || ngAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — geofence events are ignored' });
@@ -5092,6 +5079,8 @@ router.post('/:name', async (req, res) => {
     // find-existing-by-user+date check) since this always looks up first.
     case 'markSelfieAttendance': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const saRel = await keyedLock('att:' + cu.id);   // two requests at once used to create two records for the same day
+      try {
       const { event: saEvent, selfie_url: saSelfieUrl, location: saLocation, notes: saNotes, reason: saReasonIn } = p;
       if (!['in', 'out'].includes(saEvent)) return res.json({ success: false, error: "event must be 'in' or 'out'" });
       // Why the employee is using the Selfie Method — mandatory on every
@@ -5140,7 +5129,7 @@ router.post('/:name', async (req, res) => {
       if (!saAttRow && saHourIST < EARLY_MORNING_CUTOFF_HOUR) {
         const saYest = new Date(new Date(saToday + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
         const saPrevRow = await one("SELECT id,data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [cu.id, saYest]);
-        if (saPrevRow && JSON.parse(saPrevRow.data).is_in_progress) { saAttRow = saPrevRow; saAttDate = saYest; }
+        if (saPrevRow && canContinuePreviousDay({ date: saYest, ...JSON.parse(saPrevRow.data) }, saNowIST.toISOString())) { saAttRow = saPrevRow; saAttDate = saYest; }
       }
       const saAtt = saAttRow ? JSON.parse(saAttRow.data) : null;
       if (saAtt?.status === 'regularised' || saAtt?.regularised) return res.json({ success: false, error: 'This day has been manually regularised by HR — selfie punches are ignored' });
@@ -5229,6 +5218,7 @@ router.post('/:name', async (req, res) => {
         working_hours: saSessionData.working_hours, status: saFinalStatus,
         field_trip: saFieldTrip ? { id: saFieldTrip.id, status: saFieldTrip.status } : null,
       });
+      } finally { saRel(); }
     }
 
     /* ── Admin: mark/edit any employee's attendance for any date ──
@@ -10094,6 +10084,13 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: true, applied: rcApply, ...rc.stats, unmapped_codes: rc.samples.unmapped_codes, status_changes_sample: rc.samples.status_changes, error_sample: rc.samples.error || null });
     }
 
+    // How fresh the machine punches are, so a stopped sync is seen the same day instead of looking like absence.
+    case 'getPunchFeedStatus': {
+      if (!(await hasRole(cu, [...MGR_ROLES, 'manager']))) return res.status(403).json({ error: 'Access denied' });
+      const pfRows = await all("SELECT data::jsonb->>'DeviceName' AS device, MAX(data::jsonb->>'LogDate') AS last_punch, MAX(data::jsonb->>'ProcessedAt') AS last_received FROM entities WHERE type='AttendanceLog' AND data::jsonb->>'LogDate' >= $1 AND data::jsonb->>'DeviceName' IS NOT NULL GROUP BY 1", [istDate(Date.now() - 7 * 86400000)]);
+      return res.json({ success: true, devices: feedStatus(pfRows, Date.now()), server_time: new Date().toISOString() });
+    }
+
     case 'reprocessAttendanceLogs': {
       if (!(await hasRole(cu, HR_ROLES))) return res.status(403).json({ error: 'HR/Admin access required' });
       // Re-reads stored AttendanceLogs for a date range and upserts Attendance records.
@@ -11702,8 +11699,8 @@ router.post('/:name', async (req, res) => {
 
           if (attRow) {
             const att = JSON.parse(attRow.data);
-            const finalCheckIn  = reg.requested_check_in  || att.check_in_time;
-            const finalCheckOut = reg.requested_check_out || att.check_out_time;
+            // the request carries bare "HH:mm" values: they are turned into full times, or the sessions and worked hours come out empty
+            const { check_in_time: finalCheckIn, check_out_time: finalCheckOut } = regularisedTimes(reg, att, regDate);
             // Rebuild sessions/raw_punches/working_hours from the final
             // check-in/out times too — previously only the top-level
             // check_in_time/check_out_time fields got overlaid, leaving
@@ -11718,6 +11715,8 @@ router.post('/:name', async (req, res) => {
             const updAtt = {
               ...att,
               ...sessionFields,
+              original_punches: originalPunches(att, { check_in_time: finalCheckIn, check_out_time: finalCheckOut }),
+              ...(reg.requested_check_out ? { overtime_minutes: 0 } : {}),
               status: reg.requested_status || 'present',
               regularised: true,
               regularisation_id,
@@ -11737,8 +11736,7 @@ router.post('/:name', async (req, res) => {
           } else {
             // Create attendance record if it doesn't exist
             const newAttId = uuidv4();
-            const finalCheckIn  = reg.requested_check_in  || null;
-            const finalCheckOut = reg.requested_check_out || null;
+            const { check_in_time: finalCheckIn, check_out_time: finalCheckOut } = regularisedTimes(reg, null, regDate);
             const newAtt = {
               id: newAttId,
               user_id: reg.user_id,
@@ -11833,8 +11831,7 @@ router.post('/:name', async (req, res) => {
 
         if (attRow) {
           const att = JSON.parse(attRow.data);
-          const finalCheckIn  = reg.requested_check_in  || att.check_in_time;
-          const finalCheckOut = reg.requested_check_out || att.check_out_time;
+          const { check_in_time: finalCheckIn, check_out_time: finalCheckOut } = regularisedTimes(reg, att, regDate);
           // Previously skipped entirely once att.regularised was already
           // true — but that flag alone doesn't mean this row's `sessions`
           // (the Attendance Details "Work Sessions" panel/Total Work) were
@@ -11852,6 +11849,7 @@ router.post('/:name', async (req, res) => {
           const updAtt = {
             ...att,
             ...sessionFields,
+            original_punches: originalPunches(att, { check_in_time: finalCheckIn, check_out_time: finalCheckOut }),
             status: reg.requested_status || 'present',
             regularised: true,
             regularisation_id: reg.id,
@@ -11862,8 +11860,7 @@ router.post('/:name', async (req, res) => {
           fixed++;
         } else {
           const newAttId = uuidv4();
-          const finalCheckIn  = reg.requested_check_in  || null;
-          const finalCheckOut = reg.requested_check_out || null;
+          const { check_in_time: finalCheckIn, check_out_time: finalCheckOut } = regularisedTimes(reg, null, regDate);
           const newAtt = {
             id: newAttId,
             user_id: reg.user_id,

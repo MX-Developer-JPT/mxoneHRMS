@@ -19,6 +19,8 @@
 import express from 'express';
 import { one, all, run } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
+import { keyedLock } from '../utils/keyedLock.js';
+import { canContinuePreviousDay } from '../utils/attendanceRules.js';
 
 const router = express.Router();
 
@@ -131,7 +133,7 @@ async function resolveAttendanceRow(userId, punchIso, punchDate, shift) {
   );
   if (prevDay) {
     const pd = JSON.parse(prevDay.data);
-    if (pd.is_in_progress) return { date: yesterday, row: prevDay };
+    if (canContinuePreviousDay({ date: yesterday, ...pd }, punchIso)) return { date: yesterday, row: prevDay };
   }
   return { date: punchDate, row: null };
 }
@@ -603,7 +605,8 @@ const _punchLocks = new Map();
 function processRecord(record) {
   const key = String(record?.user_id || record?.employee_code || record?.EmployeeCode || '').trim().toUpperCase() || '_';
   const prev = _punchLocks.get(key) || Promise.resolve();
-  const run = prev.catch(() => {}).then(() => processRecordUnlocked(record));
+  const held = [];
+  const run = prev.catch(() => {}).then(() => processRecordUnlocked(record, held)).finally(() => held.forEach(release => release()));
   const tail = run.catch(() => {});
   _punchLocks.set(key, tail);
   tail.then(() => { if (_punchLocks.get(key) === tail) _punchLocks.delete(key); });
@@ -624,7 +627,7 @@ async function stashBiometricPunch(rowId, data, punch) {
   await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...data, biometric_punches: list }), rowId]);
 }
 
-async function processRecordUnlocked(record) {
+async function processRecordUnlocked(record, held) {
   // Normalise field names — accept eBio Pascal-case and snake_case formats.
   // Trimmed here (not just lower-cased for the match below) so a stray
   // leading/trailing space from the device doesn't create a distinct
@@ -761,6 +764,8 @@ async function processRecordUnlocked(record) {
       note: `employee_code=${codeStr} not yet mapped — set the Biometric ID on the employee record`,
     };
   }
+
+  held.push(await keyedLock('att:' + userId));   // a selfie / geofence punch for this person must not write at the same moment
 
   // 3. Find or create the Attendance record this punch belongs to — for an
   // overnight shift that's not always punchDate itself (see resolveAttendanceRow).

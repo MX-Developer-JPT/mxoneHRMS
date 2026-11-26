@@ -14,6 +14,7 @@
 // Idempotent: a second run finds nothing to do. Punches within 60 s of an already recorded one are double taps (the same
 // rule buildSessions applies) and count as applied.
 import { v4 as uuidv4 } from 'uuid';
+import { canContinuePreviousDay } from './attendanceRules.js';
 import { all, one, run } from '../db.js';
 import { buildSessions, closeTrailingOpenSession, computeStatusFromSessions, applyDeclaredStatus, applyHalfDayLeaveStatus, getHalfDayOverrideHours, getShift, EARLY_MORNING_CUTOFF_HOUR } from '../routes/attendancelog.js';
 
@@ -100,7 +101,7 @@ export async function reconcileBiometricPunches({ from, to, codes, apply = false
       if (hasPunch(same?.d, p.tms)) { stats.already_applied++; stamp(p, same.id); continue; }
       if (hasPunch(prev?.d, p.tms)) { stats.already_applied++; stamp(p, prev.id); continue; }
       const hour = new Date(p.tms).getUTCHours() + new Date(p.tms).getUTCMinutes() / 60;
-      const target = !same && hour < EARLY_MORNING_CUTOFF_HOUR && prev?.d?.is_in_progress ? prevDay(p.date) : p.date;
+      const target = !same && hour < EARLY_MORNING_CUTOFF_HOUR && canContinuePreviousDay(prev?.d, p.t) ? prevDay(p.date) : p.date;
       stats.punches_missing++;
       if (!missingBy.has(target)) missingBy.set(target, []);
       missingBy.get(target).push(p);

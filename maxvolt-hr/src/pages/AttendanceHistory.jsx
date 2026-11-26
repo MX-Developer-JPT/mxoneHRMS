@@ -30,6 +30,18 @@ export default function AttendanceHistory() {
     loadData();
   }, []);
 
+  // keep the calendar live: punches arrive all day from the machine, selfie, geofence and HR corrections
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    const refresh = async () => {
+      if (document.visibilityState === 'hidden') return;
+      try { setAttendanceData(await base44.entities.Attendance.filter({ user_id: user.id }, '-date', 500)); } catch { /* keep what is shown */ }
+    };
+    const t = setInterval(refresh, 60000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', refresh); };
+  }, [user?.id]);
+
   const loadData = async () => {
     try {
       const currentUser = await base44.auth.me();

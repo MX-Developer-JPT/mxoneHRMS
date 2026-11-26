@@ -117,6 +117,13 @@ export default function AllAttendance() {
     })();
   }, []);
 
+  const [feed, setFeed] = useState([]);   // when each attendance machine last delivered a punch
+  useEffect(() => {
+    const pull = async () => { try { const r = await base44.functions.invoke('getPunchFeedStatus', {}); const d = r.data || r; if (d.success) setFeed(d.devices || []); } catch { /* optional */ } };
+    pull(); const t = setInterval(pull, 60000);
+    return () => clearInterval(t);
+  }, []);
+
   useEffect(() => { loadData(false); }, [date]);
 
   useEffect(() => {
@@ -637,6 +644,15 @@ export default function AllAttendance() {
             </div>
           </div>
         </div>
+
+        {feed.length > 0 && (
+          <div className={`rounded-lg border px-3 py-2 text-xs flex flex-wrap gap-x-4 gap-y-1 ${feed.some(f => f.attention) ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-white text-gray-600'}`}>
+            <span className="font-semibold">Attendance machines</span>
+            {feed.map(f => (
+              <span key={f.device} className={f.attention ? 'font-medium' : ''}>
+                {f.device}: {f.quiet_minutes == null ? 'nothing received' : `last punch received ${f.quiet_minutes < 1 ? 'just now' : f.quiet_minutes < 60 ? f.quiet_minutes + ' min ago' : Math.floor(f.quiet_minutes / 60) + ' h ' + (f.quiet_minutes % 60) + ' min ago'}`}{f.attention ? ' - check the sync computer' : ''}
+              </span>))}
+          </div>)}
 
         {/* Stats */}
         <div className="grid grid-cols-3 md:grid-cols-6 gap-3">

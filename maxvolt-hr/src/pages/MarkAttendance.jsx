@@ -121,6 +121,18 @@ export default function MarkAttendance() {
     return () => clearInterval(timer);
   }, []);
 
+  // Punches also arrive from the machine, the geofence and HR: today's record is re-read every 30 s and on returning to the app.
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    const refresh = async () => {
+      if (document.visibilityState === 'hidden') return;
+      try { const a = await base44.entities.Attendance.filter({ user_id: user.id, date: format(new Date(), 'yyyy-MM-dd') }); setTodayAttendance(a[0] || null); } catch { /* keep what is shown */ }
+    };
+    const t = setInterval(refresh, 30000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', refresh); };
+  }, [user?.id]);
+
   const handleEnableLocationTap = () => {
     setLocationNeedsTap(false);
     getCurrentLocationWithDetails();
