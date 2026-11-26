@@ -707,3 +707,20 @@ export function sendingStatus({ trip, device, hasAndroidApp }, nowMs, cfgIn) {
     text: (age == null ? 'On duty, nothing received' : 'On duty, nothing for ' + (age >= 60 ? Math.floor(age / 60) + ' h ' + (age % 60) + ' min' : age + ' min')) + ' · ' + (fix || 'ask them to open the app (Android may have stopped it)'),
   };
 }
+
+// A parked, locked phone saves battery with rough network fixes that are too coarse to draw. They still prove it is where it was:
+// when the newest recent fix agrees with the last good position (within its own error), that position is marked as current.
+export function stillThere(lastPos, incoming, nowMs, cfgIn) {
+  const cfg = cfgIn || FT_DEFAULTS;
+  if (!lastPos || !Number.isFinite(Date.parse(lastPos.t))) return lastPos;
+  let newest = null;
+  for (const p of Array.isArray(incoming) ? incoming : []) {
+    const t = Date.parse(p?.t);
+    if (!Number.isFinite(t) || t > nowMs + cfg.max_future_s * 1000 || nowMs - t > cfg.live_stale_minutes * 60000) continue;
+    if (cfg.reject_mock && (p.mock === true || p.simulated === true || p.is_mock === true || p.isFromMockProvider === true)) continue;
+    if (!newest || t > Date.parse(newest.t)) newest = p;
+  }
+  if (!newest || Date.parse(newest.t) <= Date.parse(lastPos.t)) return lastPos;
+  const acc = Number(newest.acc) || 0, d = havM(lastPos, { lat: Number(newest.lat), lng: Number(newest.lng) });
+  return acc <= 200 && d <= Math.max(cfg.stop_radius_m / 2, acc) ? { ...lastPos, t: new Date(Date.parse(newest.t)).toISOString() } : lastPos;
+}

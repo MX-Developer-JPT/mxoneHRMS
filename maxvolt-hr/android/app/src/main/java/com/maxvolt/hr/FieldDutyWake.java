@@ -19,9 +19,9 @@ import android.os.Build;
  * the keys TripRecorder.start() writes. Keep them in sync with patches/@capacitor-community+background-geolocation+*.patch.
  */
 final class FieldDutyWake {
-    private static final String ARM_PREFS = "maxvolt_fieldduty_wake";
-    private static final String K_TOKEN = "device_token";
-    private static final String K_API = "api_base";
+    static final String ARM_PREFS = "maxvolt_fieldduty_wake";
+    static final String K_TOKEN = "device_token";
+    static final String K_API = "api_base";
 
     // TripRecorder's store (plugin, package-private).
     private static final String TR_PREFS = "maxvolt_trip_recorder";
@@ -34,11 +34,17 @@ final class FieldDutyWake {
     static void arm(Context c, String deviceToken, String apiBase) {
         c.getApplicationContext().getSharedPreferences(ARM_PREFS, Context.MODE_PRIVATE).edit()
                 .putString(K_TOKEN, deviceToken).putString(K_API, apiBase).apply();
+        FieldDutyWatchdog.schedule(c);
     }
 
     /** Called on sign-out: this phone must not start recording for the next person who uses it. */
     static void disarm(Context c) {
         c.getApplicationContext().getSharedPreferences(ARM_PREFS, Context.MODE_PRIVATE).edit().clear().apply();
+        FieldDutyWatchdog.schedule(c);
+    }
+
+    static boolean isRecording(Context c) {
+        return c.getApplicationContext().getSharedPreferences(TR_PREFS, Context.MODE_PRIVATE).getBoolean("active", false);
     }
 
     static boolean isArmed(Context c) {
@@ -65,7 +71,12 @@ final class FieldDutyWake {
                 .putString("api_base", api);
         if (!sameTrip) e.putString("queue", "[]");
         e.apply();
+        FieldDutyWatchdog.schedule(app);
+        return startService(app);
+    }
 
+    /** Starts (or confirms) the plugin's location service in its native-only mode. */
+    static boolean startService(Context app) {
         Intent svc = new Intent();
         svc.setClassName(app, SERVICE_CLASS);
         svc.setAction(ACTION_START_HEADLESS);

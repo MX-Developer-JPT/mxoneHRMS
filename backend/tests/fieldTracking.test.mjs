@@ -471,3 +471,13 @@ test('coverage: says who is not sending and why', async () => {
   const t = { status: 'active', start_time: new Date(noon - 7200000).toISOString(), last_point_at: new Date(noon - 300000).toISOString() };
   assert.equal(wakeDue(t, { count: NUDGE.WAKE_MAX, lastMs: noon - 3600000 }, noon), true);   // heard since the last push: a new silent spell
 });
+
+test('parked phone: rough battery-saving fixes keep the last position current only when they agree with it', async () => {
+  const { stillThere } = await import('../utils/fieldTracking.js');
+  const lp = { lat: O.lat, lng: O.lng, t: iso(600), acc: 5 };
+  assert.equal(stillThere(lp, [pt(40, 30, { acc: 95 })], NOW).t, iso(30));
+  assert.equal(stillThere(lp, [pt(900, 30, { acc: 95 })], NOW).t, lp.t);            // somewhere else
+  assert.equal(stillThere(lp, [pt(0, 3000, { acc: 20 })], NOW).t, lp.t);            // old
+  assert.equal(stillThere(lp, [pt(0, 30, { acc: 20, mock: true })], NOW).t, lp.t);  // fake GPS
+  assert.equal(stillThere(lp, [pt(0, 30, { acc: 900 })], NOW).t, lp.t);             // too vague to say anything
+});

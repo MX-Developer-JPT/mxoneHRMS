@@ -1144,7 +1144,7 @@ const HR_ROLES = ['hr', 'admin'];
 // long-lived "device token". It is signed with a DIFFERENT secret and is only honoured by the two geofence
 // functions below — a stolen one cannot open the rest of the app (the entities/auth routes never accept it).
 const GEO_SECRET = createHash('sha256').update('maxvolt-geofence-device:' + JWT_SECRET).digest('hex');
-const GEO_DEVICE_FNS = new Set(['nativeGeofenceEvent', 'getMyGeofence', 'logFieldPoints']);   // logFieldPoints: native trip recording
+const GEO_DEVICE_FNS = new Set(['nativeGeofenceEvent', 'getMyGeofence', 'logFieldPoints', 'getMyFieldSession']);   // getMyFieldSession: the phone's watchdog (own session only)   // logFieldPoints: native trip recording
 const getGeoDeviceUser = (req) => {
   const t = req.headers.authorization?.replace('Bearer ', '');
   if (!t) return null;
@@ -5426,6 +5426,7 @@ router.post('/:name', async (req, res) => {
       const proc = lfRules.backfillTrail(processPoints(ft, lfScreen.accepted, lfNow).trip, lfScreen.late, lfNow);
       const upd = {
         ...proc,
+        last_pos: lfRules.stillThere(proc.last_pos, lfPoints, lfNow, lfCfg),
         beats: lfRules.recordBeats(ft.beats, lfScreen.accepted.map(x => Date.parse(x.t)).concat(lfNow)),   // the server heard from the phone now
         rule_stats: lfRules.addRejectStats(ft.rule_stats, lfScreen.rejected),
       };

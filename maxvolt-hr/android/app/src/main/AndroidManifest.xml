@@ -29,6 +29,15 @@
             </intent-filter>
         </service>
 
+        <!-- Restarts / keeps Field Duty tracking without the app being opened: system alarm, reboot and app update. -->
+        <receiver android:name=".FieldDutyWatchdog" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -41,6 +50,7 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Required on Android 13 (API 33)+ to show any notification at all — without
          this declared, FirebaseMessaging.requestPermissions() in nativePush.js has
          nothing to request and notifications are blocked by default on the OS. -->

@@ -297,7 +297,7 @@ index a92fcf9..6410a56 100644
      }
  
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
-index fafbb86..20f7e04 100644
+index fafbb86..7d615f0 100644
 --- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
 @@ -1,8 +1,10 @@
@@ -311,7 +311,7 @@ index fafbb86..20f7e04 100644
  import android.content.pm.ServiceInfo;
  import android.location.Location;
  import android.os.Binder;
-@@ -17,17 +19,48 @@ import com.google.android.gms.location.LocationRequest;
+@@ -17,17 +19,49 @@ import com.google.android.gms.location.LocationRequest;
  import com.google.android.gms.location.LocationResult;
  import com.google.android.gms.location.LocationServices;
  
@@ -351,6 +351,7 @@ index fafbb86..20f7e04 100644
 +    static final String ACTION_START_HEADLESS = (
 +            BackgroundGeolocationService.class.getPackage().getName() + ".START_HEADLESS"
 +    );
++    private static final String ACTION_KEEP = "com.equimaps.capacitor_background_geolocation.KEEP_ALIVE";
 +    static final String HEADLESS_PREFS = "maxvolt_geofence_headless";
 +    static final String PREF_TRACKING_ACTIVE = "tracking_active";
 +    static final String PREF_AUTH_TOKEN = "auth_token";
@@ -360,7 +361,7 @@ index fafbb86..20f7e04 100644
      private final IBinder binder = new LocalBinder();
  
      // Must be unique for this application.
-@@ -42,22 +75,104 @@ public class BackgroundGeolocationService extends Service {
+@@ -42,22 +76,127 @@ public class BackgroundGeolocationService extends Service {
      }
      private HashSet<Watcher> watchers = new HashSet<Watcher>();
  
@@ -383,6 +384,7 @@ index fafbb86..20f7e04 100644
 +    // far from every office the service drops to a low-power profile (network/wifi, 30 m movement, batched) and returns to precise the
 +    // moment the phone moves. See updateHeadlessProfile().
 +    private volatile boolean headlessEco = false;
++    private volatile boolean headlessTripProfile = false;   // the current location request was built for a trip
 +    private long headlessProfileAt = 0;
 +    private long headlessLastMoveMs = 0;
 +    private Location headlessAnchor = null;
@@ -413,10 +415,39 @@ index fafbb86..20f7e04 100644
  
 +    @Override
 +    public int onStartCommand(Intent intent, int flags, int startId) {
-+        if (intent != null && ACTION_START_HEADLESS.equals(intent.getAction())) {
++        // intent == null: Android removed the process (memory, battery manager) and is restarting this service. Without handling it,
++        // the restarted service sat idle and tracking stayed dead until somebody opened the app.
++        if (intent != null && ACTION_KEEP.equals(intent.getAction())) {
++            promoteToForeground();
++            return START_STICKY;
++        }
++        if (intent == null || ACTION_START_HEADLESS.equals(intent.getAction())) {
++            diag(intent == null ? "service restarted by Android" : "headless start requested");
++            promoteToForeground();   // required within seconds of startForegroundService, whatever happens next
 +            startHeadlessTrackingIfNeeded();
++            if (!headlessActive && watchers.isEmpty()) {
++                stopForeground(true);
++                stopSelf();
++                return START_NOT_STICKY;
++            }
 +        }
 +        return START_STICKY;
++    }
++
++    private void promoteToForeground() {
++        try {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
++                String channel = BackgroundGeolocationService.class.getPackage().getName();
++                if (nm != null && nm.getNotificationChannel(channel) == null) {
++                    nm.createNotificationChannel(new android.app.NotificationChannel(channel, "Location tracking", android.app.NotificationManager.IMPORTANCE_LOW));
++                }
++            }
++            Notification current = getNotification();
++            startForeground(NOTIFICATION_ID, current != null ? current : buildHeadlessNotification());
++        } catch (Exception e) {
++            diag("could not show the tracking notification: " + e);
++        }
 +    }
 +
 +    // Fires when the app is swiped away from recents (task removed) while
@@ -448,26 +479,22 @@ index fafbb86..20f7e04 100644
 +    // over, in which case the service must keep running independently.
      @Override
      public boolean onUnbind(Intent intent) {
+-        for (Watcher watcher : watchers) {
+-            watcher.client.removeLocationUpdates(watcher.locationCallback);
 +        // Capture this BEFORE clearing watchers below — onTaskRemoved()'s own
 +        // check of `watchers` can no longer be trusted once this method has
 +        // run (see its comment), so the headless handoff decision has to be
 +        // made right here, with the client-was-tracking signal still intact.
-+        boolean wasTracking = !watchers.isEmpty();
-         for (Watcher watcher : watchers) {
-             watcher.client.removeLocationUpdates(watcher.locationCallback);
-         }
-         watchers = new HashSet<Watcher>();
--        stopSelf();
-+        if (wasTracking) {
-+            startHeadlessTrackingIfNeeded();
-+        }
++        takeOverFromApp("app disconnected");
 +        if (!headlessActive) {
 +            stopSelf();
-+        }
+         }
+-        watchers = new HashSet<Watcher>();
+-        stopSelf();
          return false;
      }
  
-@@ -77,6 +192,10 @@ public class BackgroundGeolocationService extends Service {
+@@ -77,6 +216,10 @@ public class BackgroundGeolocationService extends Service {
                  Notification backgroundNotification,
                  float distanceFilter
          ) {
@@ -478,7 +505,7 @@ index fafbb86..20f7e04 100644
              FusedLocationProviderClient client = LocationServices.getFusedLocationProviderClient(
                      BackgroundGeolocationService.this
              );
-@@ -90,6 +209,8 @@ public class BackgroundGeolocationService extends Service {
+@@ -90,6 +233,8 @@ public class BackgroundGeolocationService extends Service {
                  @Override
                  public void onLocationResult(LocationResult locationResult) {
                      Location location = locationResult.getLastLocation();
@@ -487,7 +514,30 @@ index fafbb86..20f7e04 100644
                      Intent intent = new Intent(ACTION_BROADCAST);
                      intent.putExtra("location", location);
                      intent.putExtra("id", id);
-@@ -168,8 +289,442 @@ public class BackgroundGeolocationService extends Service {
+@@ -136,6 +281,7 @@ public class BackgroundGeolocationService extends Service {
+                     // permission bugs, so we prevent any exceptions from
+                     // crashing the app. See issue #86.
+                     startForeground(NOTIFICATION_ID, backgroundNotification);
++                    keepAlive();
+                 } catch (Exception exception) {
+                     Logger.error("Failed to foreground service", exception);
+                 }
+@@ -147,7 +293,13 @@ public class BackgroundGeolocationService extends Service {
+                 if (watcher.id.equals(id)) {
+                     watcher.client.removeLocationUpdates(watcher.locationCallback);
+                     watchers.remove(watcher);
+-                    if (getNotification() == null) {
++                    if (watchers.isEmpty() && trackingWanted()) {
++                        backgroundHandoff = true;
++                        startHeadlessTrackingIfNeeded();
++                    } else if (watchers.isEmpty() && !headlessActive) {
++                        stopForeground(true);
++                        stopSelf();
++                    } else if (getNotification() == null && !headlessActive) {
+                         stopForeground(true);
+                     }
+                     return;
+@@ -168,8 +320,487 @@ public class BackgroundGeolocationService extends Service {
              }
          }
  
@@ -506,12 +556,45 @@ index fafbb86..20f7e04 100644
 +            if (!watchers.isEmpty()) stopHeadlessTracking();
 +        }
 +
++        // Called when the app's screen is destroyed (swiped away, closed by the system). This used to stop the service outright,
++        // which ended Field Duty and geofence tracking the moment the app was closed.
          void stopService() {
-             BackgroundGeolocationService.this.stopSelf();
-         }
-     }
+-            BackgroundGeolocationService.this.stopSelf();
++            takeOverFromApp("app closed");
++            if (!headlessActive) BackgroundGeolocationService.this.stopSelf();
++        }
++    }
 +
 +    // ── Headless (native-only) tracking ──────────────────────────────────
++
++    // Is there anything that must be tracked even with the app gone: geofence attendance switched on, or a trip being recorded?
++    private boolean trackingWanted() {
++        return getSharedPreferences(HEADLESS_PREFS, MODE_PRIVATE).getBoolean(PREF_TRACKING_ACTIVE, false) || TripRecorder.isActive(this);
++    }
++
++    private void takeOverFromApp(String why) {
++        for (Watcher watcher : watchers) {
++            watcher.client.removeLocationUpdates(watcher.locationCallback);
++        }
++        watchers = new HashSet<Watcher>();
++        if (!trackingWanted()) return;
++        diag(why + " -> native tracking continues");
++        backgroundHandoff = true;
++        keepAlive();
++        startHeadlessTrackingIfNeeded();
++    }
++
++    // A service that is only "bound" by the app is destroyed with the app, foreground notification or not. Marking it "started"
++    // as well lets it outlive the screen; it stops itself when there is nothing left to track.
++    private void keepAlive() {
++        try {
++            Intent self = new Intent(getApplicationContext(), BackgroundGeolocationService.class).setAction(ACTION_KEEP);
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) getApplicationContext().startForegroundService(self);
++            else getApplicationContext().startService(self);
++        } catch (Exception e) {
++            diag("could not keep the service alive: " + e);
++        }
++    }
 +
 +    private void startHeadlessTrackingIfNeeded() {
 +        if (headlessActive) { diag("headless already active"); return; }
@@ -540,6 +623,12 @@ index fafbb86..20f7e04 100644
 +            @Override
 +            public void onLocationResult(LocationResult locationResult) {
 +                Location location = locationResult.getLastLocation();
++                if (tripOnly && !TripRecorder.isActive(BackgroundGeolocationService.this)) {   // session over: stop using GPS and battery
++                    diag("trip over: stopping the service");
++                    stopHeadlessTracking();
++                    if (watchers.isEmpty()) { stopForeground(true); stopSelf(); }
++                    return;
++                }
 +                if (location != null) {
 +                    TripRecorder.onFix(getApplicationContext(), location);
 +                    handleHeadlessLocation(location, token, fencesJson, apiBase);
@@ -679,6 +768,13 @@ index fafbb86..20f7e04 100644
 +            r.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
 +            r.setSmallestDisplacement(5f);
 +        }
++        headlessTripProfile = TripRecorder.isActive(this);
++        if (headlessTripProfile) {
++            // While a trip is recorded fixes must keep coming even when the phone does not move: each one wakes the phone, is
++            // uploaded and tells the server the employee is still there (a movement filter left a parked, locked phone silent).
++            r.setSmallestDisplacement(0f);
++            if (eco) { r.setInterval(60000); r.setFastestInterval(30000); r.setMaxWaitTime(60000); }
++        }
 +        return r;
 +    }
 +
@@ -697,7 +793,7 @@ index fafbb86..20f7e04 100644
 +        boolean far = nearest > 1000 && !trip;
 +        boolean parked = stillMs > 4 * 60000L && (trip || nearest < 0 || nearest > 150);
 +        boolean wantEco = far || parked;
-+        if (wantEco == headlessEco || now - headlessProfileAt < 20000) return;
++        if ((wantEco == headlessEco && trip == headlessTripProfile) || now - headlessProfileAt < 20000) return;
 +        try { headlessClient.removeLocationUpdates(headlessCallback); } catch (Exception ignored) { /* nothing registered */ }
 +        try {
 +            headlessClient.requestLocationUpdates(buildHeadlessRequest(wantEco), headlessCallback, android.os.Looper.getMainLooper());
@@ -707,8 +803,8 @@ index fafbb86..20f7e04 100644
 +        } catch (Exception e) {
 +            // never end up with no location updates at all: fall back to precise
 +            try { headlessClient.requestLocationUpdates(buildHeadlessRequest(false), headlessCallback, android.os.Looper.getMainLooper()); headlessEco = false; } catch (Exception ignored) { /* the service restarts on the next trigger */ }
-+        }
-+    }
+         }
+     }
 +
 +    private void handleHeadlessLocation(Location location, String token, String fencesJson, String apiBase) {
 +        headlessFixCount++;
@@ -1235,7 +1331,7 @@ index 0000000..2a650fb
 +}
 diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java
 new file mode 100644
-index 0000000..4bcf020
+index 0000000..e0b6ce3
 --- /dev/null
 +++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/TripRecorder.java
 @@ -0,0 +1,229 @@

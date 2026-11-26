@@ -11,5 +11,6 @@ public class MaxvoltApp extends Application {
     public void onCreate() {
         super.onCreate();
         FieldDutyHeartbeat.start(this);
+        FieldDutyWatchdog.schedule(this);
     }
 }

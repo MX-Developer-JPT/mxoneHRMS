@@ -46,6 +46,9 @@ final class FieldDutyHeartbeat {
         }, EVERY_MS);
     }
 
+    /** One keep-alive right now (used by the watchdog alarm, because timers stall while the phone dozes). */
+    static void beatNow(Context c) { beat(c.getApplicationContext()); }
+
     private static void beat(final Context app) {
         SharedPreferences p = app.getSharedPreferences(TR_PREFS, Context.MODE_PRIVATE);
         if (!p.getBoolean("active", false)) return;
