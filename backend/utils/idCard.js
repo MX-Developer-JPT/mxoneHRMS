@@ -104,18 +104,30 @@ export async function preparePhoto(photoBase64, shape = 'portrait') {
   const input = Buffer.from(raw, 'base64');
   if (!input.length) return null;
   const meta = await sharp(input).metadata();
-  const cutout = !!meta.hasAlpha;
+  // Only a photo with real transparency is a cut-out; a PNG that merely carries a fully opaque alpha channel is an ordinary photo
+  // (treating it as a cut-out shrank it into the bottom of the tall box with empty bands around it).
+  const cutout = !!meta.hasAlpha && !(await sharp(input).stats()).isOpaque;
   const square = shape === 'square';   // ReEarth: a rounded square frame
   const box = square ? { top: RE.PHOTO.y0, bottom: RE.PHOTO.y1 } : cutout ? PHOTO_BOX_CUTOUT : PHOTO_BOX;
   const boxW = square ? RE.PHOTO.x1 - RE.PHOTO.x0 : PHOTO_W, boxH = box.bottom - box.top;
   const SCALE = 8; // px per pt — ample for 300 dpi print
-  let img = sharp(input).rotate(); // honour EXIF orientation from phones
+  const tw = Math.round(boxW * SCALE), th = Math.round(boxH * SCALE);
+  const upright = await sharp(input).rotate().toBuffer();   // honour EXIF orientation from phones
   if (cutout) {
-    img = img.resize(Math.round(boxW * SCALE), Math.round(boxH * SCALE), { fit: 'contain', position: 'bottom', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png();
-  } else {
-    img = img.resize(Math.round(boxW * SCALE), Math.round(boxH * SCALE), { fit: 'cover', position: square ? 'north' : sharp.strategy.attention }).jpeg({ quality: 90 });
+    const out = await sharp(upright).resize(tw, th, { fit: 'contain', position: 'bottom', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
+    return { bytes: out, type: 'png', cutout, box, shape: square ? 'square' : 'portrait' };
   }
-  return { bytes: await img.toBuffer(), type: cutout ? 'png' : 'jpg', cutout, box, shape: square ? 'square' : 'portrait' };
+  return { bytes: await coverCropTop(upright, tw, th), type: 'jpg', cutout, box, shape: square ? 'square' : 'portrait' };
+}
+
+// Fill the frame without stretching, centred sideways but keeping the TOP of the picture: in a head-and-shoulders photo the head
+// sits near the top, so trimming mostly from the bottom keeps the face (a "most interesting area" crop often chose the background).
+async function coverCropTop(buf, tw, th, topBias = 0.1) {
+  const { width: w, height: h } = await sharp(buf).metadata();
+  const k = Math.max(tw / w, th / h);
+  const sw = Math.max(tw, Math.round(w * k)), sh = Math.max(th, Math.round(h * k));
+  const left = Math.round((sw - tw) / 2), top = Math.round((sh - th) * topBias);
+  return sharp(buf).resize(sw, sh, { fit: 'fill' }).extract({ left, top, width: tw, height: th }).jpeg({ quality: 90 }).toBuffer();
 }
 
 // Serialisable form of a prepared photo (what is stored with a saved ID card) and back.
