@@ -114,10 +114,23 @@ export async function preparePhoto(photoBase64, shape = 'portrait') {
   const tw = Math.round(boxW * SCALE), th = Math.round(boxH * SCALE);
   const upright = await sharp(input).rotate().toBuffer();   // honour EXIF orientation from phones
   if (cutout) {
-    const out = await sharp(upright).resize(tw, th, { fit: 'contain', position: 'bottom', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
-    return { bytes: out, type: 'png', cutout, box, shape: square ? 'square' : 'portrait' };
+    return { bytes: await cutoutFit(upright, tw, th), type: 'png', cutout, box, shape: square ? 'square' : 'portrait' };
   }
   return { bytes: await coverCropTop(upright, tw, th), type: 'jpg', cutout, box, shape: square ? 'square' : 'portrait' };
+}
+
+// A cut-out (transparent background): drop the empty margins around the person, then fill the whole frame like an ordinary photo —
+// face large, head near the top, centred sideways, trimmed at the chest (the approved look). Previously the person was shrunk to fit
+// the bottom of the tall box and floated low with empty space above.
+async function cutoutFit(buf, tw, th) {
+  let src = buf;
+  try { src = await sharp(buf).trim({ threshold: 8 }).toBuffer(); } catch { /* nothing to trim */ }
+  const m = await sharp(src).metadata();
+  if (!m.width || !m.height || m.width < 20 || m.height < 20) src = buf;
+  const { width: w, height: h } = await sharp(src).metadata();
+  const k = Math.max(tw / w, th / h);
+  const sw = Math.max(tw, Math.round(w * k)), sh = Math.max(th, Math.round(h * k));
+  return sharp(src).resize(sw, sh, { fit: 'fill' }).extract({ left: Math.round((sw - tw) / 2), top: Math.round((sh - th) * 0.1), width: tw, height: th }).png().toBuffer();
 }
 
 // Fill the frame without stretching, centred sideways but keeping the TOP of the picture: in a head-and-shoulders photo the head
