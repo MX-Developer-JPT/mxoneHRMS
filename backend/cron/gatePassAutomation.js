@@ -19,6 +19,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { shiftEndDateTime, applyGatePassOuting, isOfficialOuting } from '../routes/attendancelog.js';
+import { isTravel, passNo, historyEntry, withHistory } from '../utils/gatePassRules.js';
+import { gateAdminIdsFor, notifyIds } from '../routes/gatepass.js';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
@@ -79,6 +81,20 @@ export async function closeUnreturnedGatePasses() {
     const endMs = shiftEndDateTime(passDateForShift, { ...defaultShift, ...shift }).getTime();
     if (nowMs < endMs) continue; // this employee's shift hasn't ended yet
 
+    // Inter-office travel is never closed or "arrived" by time: it stays open until the destination Gate Admin confirms it.
+    // Once the shift is over, the people who can act are alerted, once.
+    if (isTravel(pass)) {
+      if (pass.overdue_notified_at) continue;
+      const flagged = withHistory({ ...pass, overdue_notified_at: nowISO }, historyEntry({ at: nowISO, action: 'arrival_overdue', from: 'departed', to: 'departed', office: pass.destination_location, remarks: 'Arrival not confirmed by shift end' }));
+      await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2 AND status='departed'", [JSON.stringify(flagged), row.id]);
+      const who = emp?.display_name || 'An employee';
+      await notifyIds([...(await gateAdminIdsFor(pass.destination_location)), ...(await gateAdminIdsFor(pass.current_location)), ...hrAdminIds, emp?.reporting_manager_id, pass.employee_user_id], {
+        title: 'Arrival not confirmed', type: 'warning', link: '/GateAdminDashboard',
+        message: `${who} left ${pass.current_location} for ${pass.destination_location} (gate pass ${passNo(pass)}) and arrival is not confirmed yet. The destination Gate Admin should mark the arrival, or the manager / HR should record what happened.`,
+      });
+      continue;
+    }
+
     const outingType = pass.outing_type;
     const isHalfDayType = outingType === 'half_day';
     const official = isOfficialOuting(outingType);
@@ -94,7 +110,7 @@ export async function closeUnreturnedGatePasses() {
     const lopDays = resultStatus === 'half_day' ? 0.5 : 0;
 
     // The pass is closed WITHOUT a return time - the employee never came back, so no "returned" time is invented.
-    const updatedPass = {
+    let updatedPass = {
       ...pass,
       status: 'auto_closed',
       lop_deduction_days: lopDays,
@@ -106,6 +122,7 @@ export async function closeUnreturnedGatePasses() {
           ? 'Did not return by shift end - official outing, day counted as full present'
           : `Did not return by shift end - departure time used as check-out, day marked ${resultStatus.replace(/_/g, ' ')}`,
     };
+    updatedPass = withHistory(updatedPass, historyEntry({ at: nowISO, action: 'auto_closed', from: 'departed', to: 'auto_closed', remarks: updatedPass.auto_closed_reason }));
     await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [updatedPass.status, JSON.stringify(updatedPass), row.id]);
     const lop = { status: resultStatus, lopDays };
 
@@ -174,14 +191,11 @@ export async function closeStaleGatePassRequests() {
     const wasPending = pass.status === 'pending_approval';
     if (pass.status === 'approved' && isOfficialOuting(pass.outing_type)) { try { await applyGatePassOuting(pass, 'approved_unused'); } catch (e) { console.error('[gatepass-stale-close] official attendance failed:', e.message); } }
 
-    const updatedPass = {
-      ...pass,
-      status: 'auto_closed',
-      auto_closed: true,
-      auto_closed_reason: wasPending
-        ? 'Manager never actioned this request — auto-closed at day end'
-        : 'Approved but never marked departed — auto-closed at day end',
-    };
+    const reason = wasPending
+      ? 'Manager never actioned this request — auto-closed at day end'
+      : 'Approved but never marked departed — auto-closed at day end';
+    const updatedPass = withHistory({ ...pass, status: 'auto_closed', auto_closed: true, auto_closed_reason: reason },
+      historyEntry({ action: 'auto_closed', from: pass.status, to: 'auto_closed', remarks: reason }));
     await run("UPDATE entities SET status='auto_closed', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(updatedPass), row.id]);
 
     try {

@@ -189,7 +189,7 @@ function kpiList(D) {
     ['Visitors — walk-in', walk],
     ['Visitors — invited', visitors.length - walk],
     ['Gate passes — total', gatePasses.length],
-    ['Gate passes — approved / departed / returned', gatePasses.filter(g => ['approved', 'departed', 'returned', 'auto_closed'].includes(g.status)).length],
+    ['Gate passes — approved / departed / returned', gatePasses.filter(g => ['approved', 'departed', 'returned', 'auto_closed', 'completed'].includes(g.status)).length],
     ['Recruitment — new requisitions', recruitment.newRequisitions.length],
     ['Recruitment — open requisitions', recruitment.openRequisitions.length],
     ['Recruitment — new candidates', recruitment.candidatesNew.length],

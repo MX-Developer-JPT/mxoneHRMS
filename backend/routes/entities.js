@@ -10,6 +10,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendPushToUser } from '../utils/push.js';
 import { JWT_SECRET } from './auth.js';
 import { applyGatePassHalfDay, clearGatePassHalfDay, applyGatePassOuting } from './attendancelog.js';
+import { TRAVEL, ACTIVE_TRAVEL, isTravel, istNow, passNo, historyEntry, withHistory, guardPatch, stampTimes, officeGateAdmins, SYSTEM_FIELDS } from '../utils/gatePassRules.js';
 import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
 import { loadRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
@@ -393,13 +394,39 @@ async function getGateAdminAssignedLocations(userId) {
 }
 
 async function getGateAdminUserIdsForLocation(locationName) {
-  const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role)='gate_admin'");
-  const out = [];
-  for (const r of rows) {
-    const assigned = await getGateAdminAssignedLocations(r.id);
-    if (assigned === null || assigned.includes(locationName)) out.push(r.id);
+  const rows = await all("SELECT id FROM users WHERE disabled_at IS NULL AND COALESCE(NULLIF(custom_role,''), role)='gate_admin'");
+  const admins = [];
+  for (const r of rows) admins.push({ id: r.id, locations: await getGateAdminAssignedLocations(r.id) });
+  return officeGateAdmins(admins, locationName);
+}
+
+// A new gate pass: server-owned fields are reset, the reference number and first history line are written, and inter-office
+// travel must name two different active offices.
+async function prepareGatePass(res, data, cu, id) {
+  for (const f of SYSTEM_FIELDS) delete data[f];
+  data.request_date = data.request_date || istNow().slice(0, 10);
+  data.requested_at = istNow();
+  data.pass_no = passNo({ ...data, id, pass_no: null });
+  if (data.outing_type === TRAVEL) {
+    const offices = (await all("SELECT data FROM entities WHERE type='AppLocation'")).map((r) => JSON.parse(r.data)).filter((l) => String(l.is_active) !== 'false' && l.is_active !== 0).map((l) => l.name);
+    const bad = !offices.includes(data.current_location) ? 'Choose the office you are departing from' : !offices.includes(data.destination_location) ? 'Choose the destination office' : data.current_location === data.destination_location ? 'Departure and destination offices must be different' : '';
+    if (bad) { res.status(400).json({ error: bad }); return false; }
+    if (!['pending_approval', 'approved'].includes(data.status)) data.status = 'pending_approval';
+    for (const f of ['departure_time', 'return_time', 'departed_by_name', 'returned_by_name']) delete data[f];
   }
-  return out;
+  const who = await one('SELECT full_name, role, custom_role FROM users WHERE id=$1', [cu.id]);
+  data.history = [historyEntry({ action: 'requested', to: data.status, actor: { id: cu.id, name: who?.full_name, role: who?.custom_role || who?.role }, office: data.current_location, remarks: data.reason })];
+  return true;
+}
+
+// One open inter-office trip per employee (checked under a per-employee lock, in the same transaction as the insert).
+async function checkSingleActiveTravel(res, type, data, client) {
+  if (type !== 'GatePass' || data.outing_type !== TRAVEL) return true;
+  const { rows } = await client.query("SELECT data FROM entities WHERE type='GatePass' AND status = ANY($1) AND data::jsonb->>'employee_user_id'=$2 AND data::jsonb->>'outing_type'=$3 LIMIT 1", [ACTIVE_TRAVEL, data.employee_user_id, TRAVEL]);
+  if (!rows.length) return true;
+  const open = JSON.parse(rows[0].data);
+  res.status(400).json({ error: `There is already an open inter-office gate pass (${open.current_location} to ${open.destination_location}, ${String(open.status).replace(/_/g, ' ')}). It must be completed or cancelled first.` });
+  return false;
 }
 
 // Is `targetUserId` a direct or indirect report of `managementUserId`? Walks
@@ -1031,6 +1058,9 @@ router.post('/:type', async (req, res) => {
       data.lop_deduction_days = 0;
       for (const f of GATE_PASS_DECISION_FIELDS) delete data[f];
     }
+    data.employee_user_id = data.employee_user_id || cu.id;
+    data.user_id = data.employee_user_id;
+    if (!(await prepareGatePass(res, data, cu, id))) return;
   }
 
   let assetAtype = null;
@@ -1041,8 +1071,8 @@ router.post('/:type', async (req, res) => {
   }
 
   let row;
-  if (type === 'AttendanceRegularisation' || type === 'Leave') {
-    // These two have a read-then-write quota/balance check that a bare
+  if (type === 'AttendanceRegularisation' || type === 'Leave' || (type === 'GatePass' && data.outing_type === TRAVEL)) {
+    // These have a read-then-write quota/balance check that a bare
     // check-then-insert can't make atomic under concurrent requests from
     // the same user — serialize per (type,user_id) with a transaction-scoped
     // advisory lock so the second of two racing requests re-reads the
@@ -1051,6 +1081,7 @@ router.post('/:type', async (req, res) => {
     try {
       row = await withTransaction(async (client) => {
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${type}:${data.user_id}`]);
+        if (!(await checkSingleActiveTravel(res, type, data, client))) { ok = false; return null; }
         if (!(await checkRegularisationLimit(res, type, data, client))) { ok = false; return null; }
         if (!(await checkRoasterRules(res, type, data, client))) { ok = false; return null; }
         if (!(await checkElEligibility(res, type, data, client))) { ok = false; return null; }
@@ -1236,6 +1267,8 @@ router.patch('/:type/:id', async (req, res) => {
   if (!(await checkApprovalAuthorization(req, res, type, current, req.body.status))) return;
 
   if (type === 'GatePass') {
+    const blocked = guardPatch(current, req.body);
+    if (blocked) return res.status(400).json({ error: blocked });
     // A gate pass moves one step at a time: pending -> approved/rejected -> departed -> returned.
     const gpTo = req.body.status;
     if (gpTo && gpTo !== current.status) {
@@ -1247,6 +1280,18 @@ router.patch('/:type/:id', async (req, res) => {
     // The requester can withdraw their own pass but cannot write the approver's / gate admin's fields on it.
     if (current.user_id === cu.id && !['hr', 'admin'].includes(await getEffectiveRole(cu))) {
       for (const f of [...GATE_PASS_DECISION_FIELDS, 'manager_approval_status', 'manager_user_id', 'lop_deduction_days']) delete req.body[f];
+    }
+    // server clock for every gate movement and approval, and one history line per status change
+    stampTimes(req.body, current);
+    if (req.body.status && req.body.status !== current.status) {
+      const who = await one('SELECT full_name, role, custom_role FROM users WHERE id=$1', [cu.id]);
+      const actor = { id: cu.id, name: who?.full_name, role: who?.custom_role || who?.role };
+      if (['approved', 'rejected'].includes(req.body.status)) Object.assign(req.body, { manager_approval_status: req.body.status, manager_user_id: cu.id, manager_approval_date: istNow() });
+      if (req.body.status === 'departed') Object.assign(req.body, { departed_by_name: actor.name, departed_by_id: actor.id });
+      if (req.body.status === 'returned') req.body.returned_by_name = actor.name;
+      const action = { departed: 'gate_out', returned: 'gate_in' }[req.body.status] || req.body.status;
+      const remarks = ['departed', 'returned'].includes(req.body.status) ? req.body.gate_admin_notes : req.body.manager_comment;
+      req.body.history = withHistory(current, historyEntry({ action, from: current.status, to: req.body.status, actor, office: current.current_location, remarks })).history;
     }
   }
 
@@ -1627,6 +1672,11 @@ router.delete('/:type/:id', async (req, res) => {
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type, id } = req.params;
   if (!(await requireAdminForType(cu, res, type))) return;
+  if (type === 'GatePass') {
+    const gp = await one("SELECT data FROM entities WHERE type='GatePass' AND id=$1", [id]);
+    const g = gp ? JSON.parse(gp.data) : null;
+    if (g && isTravel(g) && g.departure_time) return res.status(403).json({ error: 'An inter-office travel record with a recorded departure is permanent and cannot be deleted' });
+  }
   // Deleting a financial/statutory/compliance record is never self-serve —
   // always requires HR/admin/management, regardless of ownership.
   if (SENSITIVE_TYPES.has(type)) {

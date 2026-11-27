@@ -1,44 +1,24 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useMemo } from 'react';
 import { base44 } from '@/api/base44Client';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
-import { safeDate, nowIST } from '@/lib/dateUtils';
-import GatePassTimeline, { requestedAt } from '@/components/gatepass/GatePassTimeline';
-import { Search, LogOut, LogIn, User, Clock, History, CheckCircle2, XCircle, FileClock, MapPin, Download, Loader2, ChevronLeft, ChevronRight, CalendarDays } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
+import { History, Download, Loader2, ChevronLeft, ChevronRight, CalendarDays } from 'lucide-react';
+import { SummaryCards, FilterBar, PassCard, Empty, Loading, usePassFilters, OUTING_LABELS } from '@/components/gatepass/gpShared';
+import GatePassDetail from '@/components/gatepass/GatePassDetail';
+import { safeDate } from '@/lib/dateUtils';
+import { requestedAt } from '@/components/gatepass/GatePassTimeline';
 import { toast } from 'sonner';
 
-const STATUS_COLORS = {
-  pending_approval: 'bg-yellow-100 text-yellow-800',
-  approved: 'bg-blue-100 text-blue-800',
-  rejected: 'bg-red-100 text-red-800',
-  departed: 'bg-orange-100 text-orange-800',
-  returned: 'bg-green-100 text-green-800',
-  cancelled: 'bg-gray-100 text-gray-800',
-};
-
 const STATUS_LABELS = {
-  pending_approval: 'Pending Approval',
-  approved: 'Approved',
-  rejected: 'Rejected',
-  departed: 'Departed',
-  returned: 'Returned',
-  cancelled: 'Cancelled',
+  pending_approval: 'Pending Approval', approved: 'Approved', rejected: 'Rejected', departed: 'Out / In Transit',
+  returned: 'Returned', completed: 'Completed', auto_closed: 'Auto-Closed', cancelled: 'Cancelled',
 };
+const MONTH_KEYS = ['pending_approval', 'approved', 'departed', 'returned', 'completed', 'rejected', 'cancelled'];
 
-const OUTING_TYPE_LABELS = {
-  unofficial_outing: 'Unofficial Outing',
-  official_outing: 'Official Outing',
-  short_break: 'Short Break',
-  early_leave: 'Early Leave',
-  half_day: 'Half Day',
-  travelling_to_another_office: 'Travelling to Another Office',
-};
+const OUTING_TYPE_LABELS = OUTING_LABELS;
 
 // The calendar day (India time, yyyy-MM-dd) a pass was raised on.
 const dayOf = (d) => { const t = d ? new Date(d).getTime() : NaN; return Number.isNaN(t) ? '' : new Date(t + 5.5 * 3600000).toISOString().slice(0, 10); };
@@ -61,11 +41,7 @@ export default function GatePassManagement() {
   const [users, setUsers] = useState({});
   const [employees, setEmployees] = useState({});
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState('all');
-  const [selected, setSelected] = useState(null);
-  const [comment, setComment] = useState('');
-  const [actionLoading, setActionLoading] = useState(false);
+  const [openId, setOpenId] = useState(null);
   const [activeTab, setActiveTab] = useState('live');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -78,7 +54,6 @@ export default function GatePassManagement() {
   }, []);
 
   const loadData = async () => {
-    setLoading(true);
     const [me, allPasses, allUsers, allEmployees] = await Promise.all([
       base44.auth.me(),
       base44.entities.GatePass.list('-created_date'),   // every pass, no cap
@@ -96,56 +71,18 @@ export default function GatePassManagement() {
     setLoading(false);
   };
 
-  // This page lives only in the HR/admin menu (Layout.jsx hrMenuGroups) —
-  // reporting managers and 'management' approve gate passes on the separate
-  // GatePassApproval page (scoped to their own downstream hierarchy there).
-  // So here, HR/admin can approve/reject any employee's pending pass —
-  // GatePass approval never requires the reporting manager to act first
-  // (see checkApprovalAuthorization in entities.js), so HR can cover for an
-  // unavailable manager.
+  // HR/admin may approve any employee's pass; the detail view offers whatever the server allows.
   const isHR = !!currentUser && ['hr', 'admin'].includes(currentUser.custom_role || currentUser.role);
 
-  const handleAction = async (action) => {
-    setActionLoading(true);
-    const now = nowIST();
-    const isApproved = action === 'approved';
-    try {
-      await base44.entities.GatePass.update(selected.id, {
-        manager_approval_status: action,
-        manager_user_id: currentUser.id,
-        manager_approval_date: now,
-        manager_comment: comment,
-        status: isApproved ? 'approved' : 'rejected',
-      });
-      setSelected(null);
-      setComment('');
-      await loadData();
-    } catch (err) {
-      toast.error(err.message || `Failed to ${isApproved ? 'approve' : 'reject'} this request`);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const filtered = passes.filter(p => {
-    const u = users[p.employee_user_id];
+  const enriched = useMemo(() => passes.map(p => {
     const emp = employees[p.employee_user_id];
-    const name = (emp?.display_name || u?.full_name || '').toLowerCase();
-    const matchesSearch = !search || name.includes(search.toLowerCase());
-    const matchesFilter = filter === 'all' || p.status === filter;
-    const pd = dayOf(p.created_date);
-    const matchesDay = view === 'day' ? pd === day : (!dateFrom || pd >= dateFrom) && (!dateTo || pd <= dateTo);
-    return matchesSearch && matchesFilter && matchesDay;
-  });
+    return { ...p, employee: { name: emp?.display_name || users[p.employee_user_id]?.full_name || 'Unknown', code: emp?.employee_code || '', department: emp?.department || '', designation: emp?.designation || '' } };
+  }), [passes, users, employees]);
+  const inPeriod = (p) => { const pd = dayOf(p.created_date); return view === 'day' ? pd === day : view === 'month' ? true : (!dateFrom || pd >= dateFrom) && (!dateTo || pd <= dateTo); };
+  const scope = enriched.filter(inPeriod);
+  const filters = usePassFilters(scope);
+  const filtered = filters.rows;
 
-  // the figures describe what is on screen: the chosen day, or every pass in "All days"
-  const scope = view === 'day' ? passes.filter(p => dayOf(p.created_date) === day) : view === 'all' ? passes.filter(p => { const pd = dayOf(p.created_date); return (!dateFrom || pd >= dateFrom) && (!dateTo || pd <= dateTo); }) : passes;
-  const stats = {
-    total: scope.length,
-    pending: scope.filter(p => p.status === 'pending_approval').length,
-    out: scope.filter(p => p.status === 'departed').length,
-    returned: scope.filter(p => p.status === 'returned').length,
-  };
   // people still out, or requests still waiting, from days other than the one being viewed
   const elsewhere = view === 'day' ? passes.filter(p => dayOf(p.created_date) !== day && ['pending_approval', 'departed'].includes(p.status)) : [];
 
@@ -157,7 +94,8 @@ export default function GatePassManagement() {
 
   // "All days": the same list, under a heading per day (newest first)
   const groups = [];
-  if (view === 'all') for (const p of filtered) { const d = dayOf(p.created_date); const g = groups[groups.length - 1]; if (g && g.day === d) g.items.push(p); else groups.push({ day: d, items: [p] }); }
+  if (view === 'all') { const byDay = new Map(); for (const p of filtered) { const d = dayOf(p.created_date); if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(p); }
+    groups.push(...[...byDay].sort((a, b) => (filters.f.sort === 'oldest' ? a[0].localeCompare(b[0]) : b[0].localeCompare(a[0]))).map(([d, items]) => ({ day: d, items }))); }
 
   // HR/admin only (isHR, checked at the call site) — exports exactly the
   // passes currently visible under the Live View filters/search/date range,
@@ -189,6 +127,10 @@ export default function GatePassManagement() {
         { header: 'Decision Comment', key: 'decisionComment', width: 26 },
         { header: 'Departure Time', key: 'departureTime', width: 20 },
         { header: 'Return Time', key: 'returnTime', width: 20 },
+        { header: 'Arrival Time (Destination)', key: 'arrivalTime', width: 22 },
+        { header: 'Marked Out By', key: 'outBy', width: 20 },
+        { header: 'Arrival Marked By', key: 'arrivedBy', width: 20 },
+        { header: 'Pass No', key: 'passNo', width: 18 },
         { header: 'Duration (min)', key: 'duration', width: 14 },
         { header: 'Gate Admin Notes', key: 'gateNotes', width: 26 },
         { header: 'Auto-Closed Reason', key: 'autoClosedReason', width: 26 },
@@ -196,7 +138,7 @@ export default function GatePassManagement() {
       ws.getRow(1).font = { bold: true };
       ws.views = [{ state: 'frozen', ySplit: 1 }];
 
-      const fmt = d => d ? format(new Date(d), 'dd MMM yyyy, hh:mm a') : '';
+      const fmt = d => (d ? safeDate(d, 'dd MMM yyyy, hh:mm a') : '');
       for (const p of filtered) {
         const u = users[p.employee_user_id];
         const emp = employees[p.employee_user_id];
@@ -211,7 +153,7 @@ export default function GatePassManagement() {
           currentLocation: p.current_location || '',
           destination: p.destination_location || '',
           vehicle: p.vehicle_type ? p.vehicle_type.replace(/_/g, ' ') : '',
-          requestedOn: fmt(p.created_date),
+          requestedOn: fmt(requestedAt(p)),
           expectedReturn: fmt(p.expected_return_time),
           status: STATUS_LABELS[p.status] || p.status || '',
           decision: p.manager_approval_status || '',
@@ -220,6 +162,10 @@ export default function GatePassManagement() {
           decisionComment: p.manager_comment || '',
           departureTime: fmt(p.departure_time),
           returnTime: fmt(p.return_time),
+          arrivalTime: fmt(p.arrival_time),
+          outBy: p.departed_by_name || '',
+          arrivedBy: p.arrived_by_name || '',
+          passNo: p.pass_no || '',
           duration: (p.departure_time && p.return_time) ? Math.round((new Date(p.return_time) - new Date(p.departure_time)) / 60000) : '',
           gateNotes: p.gate_admin_notes || '',
           autoClosedReason: p.auto_closed_reason || '',
@@ -240,7 +186,7 @@ export default function GatePassManagement() {
     }
   };
 
-  if (loading) return <div className="p-8 text-center text-gray-500">Loading...</div>;
+  if (loading) return <div className="p-6 max-w-5xl mx-auto"><Loading /></div>;
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
@@ -255,21 +201,9 @@ export default function GatePassManagement() {
       </div>
       <p className="text-gray-500 text-sm mb-5">Track employee gate passes — one day at a time, or all days together</p>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        {[
-          { label: view === 'day' ? 'Passes this day' : view === 'all' && (dateFrom || dateTo) ? 'Passes in range' : 'Total Passes', value: stats.total, color: 'text-gray-700' },
-          { label: 'Pending Approval', value: stats.pending, color: 'text-yellow-700' },
-          { label: 'Currently Out', value: stats.out, color: 'text-orange-700' },
-          { label: 'Returned', value: stats.returned, color: 'text-green-700' },
-        ].map(s => (
-          <Card key={s.label}>
-            <CardContent className="p-4 text-center">
-              <p className={`text-3xl font-bold ${s.color}`}>{s.value}</p>
-              <p className="text-xs text-gray-500 mt-1">{s.label}</p>
-            </CardContent>
-          </Card>
-        ))}
+      <div className="mb-6">
+        <SummaryCards passes={activeTab === 'live' ? scope : enriched} active={activeTab === 'live' && view !== 'month' ? filters.f.group : ''}
+          onPick={(group) => { filters.set({ group }); setActiveTab('live'); if (view === 'month') setView('all'); }} />
       </div>
 
       {/* Tabs */}
@@ -317,20 +251,20 @@ export default function GatePassManagement() {
                 <thead><tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
                   <th className="text-left px-4 py-2.5 font-medium">Month</th>
                   <th className="px-3 py-2.5 font-medium text-center">Total passes</th>
-                  {['pending_approval', 'approved', 'departed', 'returned', 'rejected', 'cancelled'].map(k => <th key={k} className="px-3 py-2.5 font-medium text-center">{STATUS_LABELS[k]}</th>)}
+                  {MONTH_KEYS.map(k => <th key={k} className="px-3 py-2.5 font-medium text-center">{STATUS_LABELS[k]}</th>)}
                 </tr></thead>
                 <tbody>
                   {months.map(m => (
-                    <tr key={m.month} className="border-t hover:bg-blue-50/40 cursor-pointer" onClick={() => { if (m.month === 'unknown') return; setDateFrom(`${m.month}-01`); setDateTo(lastDayOf(m.month)); setFilter('all'); setView('all'); }}>
+                    <tr key={m.month} className="border-t hover:bg-blue-50/40 cursor-pointer" onClick={() => { if (m.month === 'unknown') return; setDateFrom(`${m.month}-01`); setDateTo(lastDayOf(m.month)); filters.set({ group: 'all' }); setView('all'); }}>
                       <td className="px-4 py-2.5 font-medium text-gray-900">{m.month === 'unknown' ? 'No date' : monthLabel(m.month)}</td>
                       <td className="px-3 py-2.5 text-center text-base font-bold text-blue-700 tabular-nums">{m.total}</td>
-                      {['pending_approval', 'approved', 'departed', 'returned', 'rejected', 'cancelled'].map(k => <td key={k} className="px-3 py-2.5 text-center tabular-nums text-gray-600">{m[k] || <span className="text-gray-300">0</span>}</td>)}
+                      {MONTH_KEYS.map(k => <td key={k} className="px-3 py-2.5 text-center tabular-nums text-gray-600">{m[k] || <span className="text-gray-300">0</span>}</td>)}
                     </tr>
                   ))}
-                  {months.length === 0 && <tr><td colSpan={8} className="text-center py-10 text-gray-400">No gate passes yet.</td></tr>}
+                  {months.length === 0 && <tr><td colSpan={9} className="text-center py-10 text-gray-400">No gate passes yet.</td></tr>}
                 </tbody>
                 {months.length > 0 && <tfoot><tr className="border-t-2 bg-gray-50 font-semibold"><td className="px-4 py-2.5">All months</td><td className="px-3 py-2.5 text-center text-base text-blue-700 tabular-nums">{passes.length}</td>
-                  {['pending_approval', 'approved', 'departed', 'returned', 'rejected', 'cancelled'].map(k => <td key={k} className="px-3 py-2.5 text-center tabular-nums">{months.reduce((n, m) => n + (m[k] || 0), 0)}</td>)}</tr></tfoot>}
+                  {MONTH_KEYS.map(k => <td key={k} className="px-3 py-2.5 text-center tabular-nums">{months.reduce((n, m) => n + (m[k] || 0), 0)}</td>)}</tr></tfoot>}
               </table>
             </CardContent></Card>
           )}
@@ -343,101 +277,21 @@ export default function GatePassManagement() {
             </button>
           )}
 
-          {/* Filters */}
-          {view !== 'month' && <div className="flex flex-col gap-3 mb-5">
-            <div className="flex flex-col sm:flex-row gap-3">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <Input
-                  className="pl-9"
-                  placeholder="Search by employee name..."
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                />
-              </div>
-              {view === 'all' && <div className="flex gap-2 items-center">
-                <Input type="date" className="w-36 text-sm" value={dateFrom} onChange={e => setDateFrom(e.target.value)} placeholder="From" />
-                <span className="text-gray-400 text-sm">–</span>
-                <Input type="date" className="w-36 text-sm" value={dateTo} onChange={e => setDateTo(e.target.value)} placeholder="To" />
-                {(dateFrom || dateTo) && (
-                  <Button size="sm" variant="ghost" onClick={() => { setDateFrom(''); setDateTo(''); }}>Clear</Button>
-                )}
-              </div>}
-            </div>
-            <div className="flex gap-2 flex-wrap">
-              {['all', 'pending_approval', 'approved', 'departed', 'returned', 'rejected'].map(f => (
-                <Button
-                  key={f}
-                  variant={filter === f ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setFilter(f)}
-                >
-                  {f === 'all' ? 'All' : STATUS_LABELS[f]}
-                </Button>
-              ))}
-            </div>
+          {view !== 'month' && <div className="mb-5"><FilterBar filters={filters} passes={scope} onRefresh={loadData} /></div>}
+          {view === 'all' && <div className="flex flex-wrap gap-2 items-center mb-4 text-sm text-gray-500">
+            Period
+            <Input type="date" className="w-36 text-sm" aria-label="Period from" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+            –
+            <Input type="date" className="w-36 text-sm" aria-label="Period to" value={dateTo} onChange={e => setDateTo(e.target.value)} />
+            {(dateFrom || dateTo) && <Button size="sm" variant="ghost" onClick={() => { setDateFrom(''); setDateTo(''); }}>Clear</Button>}
           </div>}
 
           {view !== 'month' && <div className="space-y-2">
-            {filtered.length === 0 && (
-              <div className="text-center py-12 text-gray-400">{view === 'day' ? `No gate passes on ${dayLabel(day).replace(/^(Today|Yesterday) · /, '')}.` : 'No gate passes found.'}</div>
-            )}
-            {(view === 'day' ? [{ day: null, items: filtered }] : groups).map(g => (
-              <React.Fragment key={g.day || 'one'}>
+            {filtered.length === 0 && <Empty title={view === 'day' && !filters.dirty && filters.f.group === 'all' ? `No gate passes on ${dayLabel(day).replace(/^(Today|Yesterday) · /, '')}` : 'No gate passes found'} />}
+            {(view === 'day' ? [{ day: null, items: filtered }] : groups).map((g, i) => (
+              <React.Fragment key={g.day || `g${i}`}>
                 {g.day !== null && <div className="flex items-center gap-2 pt-3 pb-1"><CalendarDays className="w-4 h-4 text-blue-600" /><h3 className="text-sm font-semibold text-gray-700">{dayLabel(g.day)}</h3><span className="text-xs text-gray-400">{g.items.length} pass{g.items.length === 1 ? '' : 'es'}</span><button className="ml-auto text-xs text-blue-600 hover:underline" onClick={() => { setDay(g.day); setView('day'); }}>Open this day</button></div>}
-            {g.items.map(pass => {
-              const u = users[pass.employee_user_id];
-              const emp = employees[pass.employee_user_id];
-              const displayName = emp?.display_name || u?.full_name || 'Unknown';
-              return (
-                <Card key={pass.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelected(pass)}>
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between flex-wrap gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center font-bold text-blue-700 text-sm">
-                          {displayName.charAt(0)}
-                        </div>
-                        <div>
-                          <p className="font-semibold text-gray-900 text-sm">{displayName}</p>
-                          <p className="text-xs text-gray-400">{emp?.designation} · {emp?.department}</p>
-                        </div>
-                      </div>
-                      <div className="flex-1 px-4 hidden md:block">
-                        <p className="text-sm text-gray-700 truncate max-w-xs">{pass.reason}</p>
-                        {pass.current_location && (
-                          <p className="text-xs text-blue-600 flex items-center gap-1 mt-0.5">
-                            <MapPin className="w-3 h-3" />
-                            {pass.outing_type === 'travelling_to_another_office' && pass.destination_location
-                              ? `${pass.current_location} → ${pass.destination_location}`
-                              : `Departed from ${pass.current_location}`}
-                          </p>
-                        )}
-                        <p className="text-xs text-gray-400">{safeDate(requestedAt(pass), 'dd MMM yyyy, hh:mm a')}</p>
-                      </div>
-                      <div className="flex items-center gap-4 flex-wrap">
-                        {pass.departure_time && (
-                          <span className="text-xs text-orange-600 flex items-center gap-1">
-                            <LogOut className="w-3 h-3" /> {safeDate(pass.departure_time, 'hh:mm a')}
-                          </span>
-                        )}
-                        {pass.return_time && (
-                          <span className="text-xs text-green-600 flex items-center gap-1">
-                            <LogIn className="w-3 h-3" /> {safeDate(pass.return_time, 'hh:mm a')}
-                          </span>
-                        )}
-                        {pass.departure_time && pass.return_time && (
-                          <span className="text-xs text-gray-400 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {Math.round((new Date(pass.return_time) - new Date(pass.departure_time)) / 60000)}m
-                          </span>
-                        )}
-                        <Badge className={STATUS_COLORS[pass.status]}>{STATUS_LABELS[pass.status]}</Badge>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
+                {g.items.map(pass => <PassCard key={pass.id} pass={pass} onOpen={(x) => setOpenId(x.id)} />)}
               </React.Fragment>
             ))}
           </div>}
@@ -448,70 +302,7 @@ export default function GatePassManagement() {
         <GatePassHistory showEmployeeName={true} />
       )}
 
-      {/* Detail Dialog */}
-      <Dialog open={!!selected} onOpenChange={() => { setSelected(null); setComment(''); }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Gate Pass Details</DialogTitle>
-          </DialogHeader>
-          {selected && (() => {
-            const approver = employees[selected.manager_user_id]?.display_name || users[selected.manager_user_id]?.full_name;
-            return (
-              <div className="space-y-3 text-sm">
-                <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                  <p><span className="font-medium">Employee:</span> {employees[selected.employee_user_id]?.display_name || users[selected.employee_user_id]?.full_name}</p>
-                  <p><span className="font-medium">Department:</span> {employees[selected.employee_user_id]?.department}</p>
-                  <p><span className="font-medium">Designation:</span> {employees[selected.employee_user_id]?.designation}</p>
-                  <p><span className="font-medium">Outing Type:</span> {OUTING_TYPE_LABELS[selected.outing_type] || selected.outing_type || '—'}</p>
-                  <p><span className="font-medium">Reason:</span> {selected.reason}</p>
-                  {selected.current_location && (
-                    selected.outing_type === 'travelling_to_another_office' && selected.destination_location ? (
-                      <p><span className="font-medium">Route:</span> {selected.current_location} → {selected.destination_location}</p>
-                    ) : (
-                      <p><span className="font-medium">Departed From:</span> {selected.current_location}</p>
-                    )
-                  )}
-                  {selected.vehicle_type && (
-                    <p><span className="font-medium">Vehicle:</span> {selected.vehicle_type.replace(/_/g, ' ')}</p>
-                  )}
-                  {selected.expected_return_time && (
-                    <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
-                  )}
-                  <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
-                </div>
-
-                <GatePassTimeline pass={selected} approverName={approver} departedBy={selected.departed_by_name} returnedBy={selected.returned_by_name} />
-
-                {isHR && selected.status === 'pending_approval' && (
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Comment (optional)</label>
-                      <Textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="Add a comment..." rows={2} />
-                    </div>
-                    <div className="flex gap-3">
-                      <Button
-                        className="flex-1 bg-green-600 hover:bg-green-700"
-                        onClick={() => handleAction('approved')}
-                        disabled={actionLoading}
-                      >
-                        <CheckCircle2 className="w-4 h-4 mr-2" /> Approve
-                      </Button>
-                      <Button
-                        className="flex-1"
-                        variant="destructive"
-                        onClick={() => handleAction('rejected')}
-                        disabled={actionLoading}
-                      >
-                        <XCircle className="w-4 h-4 mr-2" /> Reject
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-        </DialogContent>
-      </Dialog>
+      <GatePassDetail passId={openId} onClose={() => setOpenId(null)} onChanged={loadData} />
     </div>
   );
 }

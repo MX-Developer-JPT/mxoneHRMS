@@ -179,7 +179,7 @@ export default function MarkAttendance() {
 
       try {
         const gatePasses = await base44.entities.GatePass.filter({ employee_user_id: currentUser.id, request_date: today });
-        const live = gatePasses.filter(g => ['approved', 'departed', 'returned', 'auto_closed'].includes(g.status));
+        const live = gatePasses.filter(g => ['approved', 'departed', 'returned', 'auto_closed', 'completed'].includes(g.status));
         // Most recently created live gate pass for today, if more than one.
         live.sort((a, b) => String(b.created_date || '').localeCompare(String(a.created_date || '')));
         setTodayGatePass(live[0] || null);
@@ -642,7 +642,7 @@ export default function MarkAttendance() {
                 <LogOut className="w-5 h-5 text-orange-600 flex-shrink-0" />
                 <div className="min-w-0">
                   <p className="font-semibold text-sm md:text-base text-orange-800">
-                    You're Currently Out{safeDate(todayGatePass.departure_time, 'h:mm a') ? ` — since ${safeDate(todayGatePass.departure_time, 'h:mm a')}` : ''}
+                    {todayGatePass.outing_type === 'travelling_to_another_office' && todayGatePass.destination_location ? `Travelling to ${todayGatePass.destination_location}` : "You're Currently Out"}{safeDate(todayGatePass.departure_time, 'h:mm a') ? ` — since ${safeDate(todayGatePass.departure_time, 'h:mm a')}` : ''}
                   </p>
                   <p className="text-xs md:text-sm text-orange-700">
                     Gate pass{todayGatePass.outing_type ? ` — ${todayGatePass.outing_type.replace(/_/g, ' ')}` : ''}

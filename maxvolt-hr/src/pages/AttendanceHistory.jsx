@@ -72,7 +72,7 @@ export default function AttendanceHistory() {
       // carries. Last one wins per date if there was more than one that day.
       const gpMap = {};
       gatePassRecords
-        .filter(g => g.departure_time && ['departed', 'returned', 'auto_closed'].includes(g.status))
+        .filter(g => g.departure_time && ['departed', 'returned', 'auto_closed', 'completed'].includes(g.status))
         .forEach(g => { gpMap[g.request_date] = g; });
       setGatePasses(gpMap);
 

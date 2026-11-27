@@ -21,7 +21,7 @@ export default function GateAdminProfile() {
 
     const passes = await base44.entities.GatePass.list('-created_date', 500);
     const todayPasses = passes.filter(p => p.created_date && isToday(new Date(p.created_date)));
-    const departed = passes.filter(p => p.status === 'departed');
+    const departed = passes.filter(p => p.status === 'departed');   // outside or travelling between offices
 
     setStats({
       total: passes.length,

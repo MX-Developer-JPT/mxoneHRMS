@@ -3,46 +3,17 @@ import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { format } from 'date-fns';
-import { safeDate, nowIST } from '@/lib/dateUtils';
-import { LogOut, LogIn, Clock, CheckCircle2, XCircle, AlertCircle, Plus, History, Car, Bike, Route, MapPin } from 'lucide-react';
+import { nowIST } from '@/lib/dateUtils';
+import { LogOut, Plus, History, Car, Bike, Route as RouteIcon, MapPin, ArrowRight, Loader2 } from 'lucide-react';
 import GatePassHistory from '@/components/gatepass/GatePassHistory';
 import { startTracking as startFieldTripTracking } from '@/lib/fieldTripTracker';
 import { toast } from 'sonner';
-
-const STATUS_COLORS = {
-  pending_approval: 'bg-yellow-100 text-yellow-800',
-  approved: 'bg-blue-100 text-blue-800',
-  rejected: 'bg-red-100 text-red-800',
-  departed: 'bg-orange-100 text-orange-800',
-  returned: 'bg-green-100 text-green-800',
-  auto_closed: 'bg-purple-100 text-purple-800',
-  cancelled: 'bg-gray-100 text-gray-800',
-};
-
-const STATUS_LABELS = {
-  pending_approval: 'Pending Approval',
-  approved: 'Approved',
-  rejected: 'Rejected',
-  departed: 'Departed',
-  returned: 'Returned',
-  auto_closed: 'Auto-Closed',
-  cancelled: 'Cancelled',
-};
-
-// Manager decision, distinct from the request's overall status — 'approved'
-// here just means the request cleared the manager-approval gate; it can
-// still move on to departed/returned/auto_closed afterwards.
-const managerApprovalStatus = (status) => {
-  if (status === 'rejected') return { label: 'Manager Rejected', className: 'bg-red-100 text-red-700 border-red-200' };
-  if (status === 'pending_approval') return { label: 'Manager Not Approved Yet', className: 'bg-gray-100 text-gray-600 border-gray-200' };
-  if (status === 'cancelled') return null; // never reached a manager decision either way
-  return { label: 'Manager Approved', className: 'bg-green-100 text-green-700 border-green-200' };
-};
+import { useGateBoard, usePassFilters, SummaryCards, FilterBar, PassCard, Empty, Loading } from '@/components/gatepass/gpShared';
+import { ActionButton, ConfirmAction } from '@/components/gatepass/GatePassActions';
+import GatePassDetail from '@/components/gatepass/GatePassDetail';
 
 const OUTING_TYPES = [
   { value: 'official_outing', label: 'Official Outing', desc: 'No LOP deduction — full day present' },
@@ -53,47 +24,41 @@ const OUTING_TYPES = [
   // getOutingLabel()/OUTING_LABELS-style maps elsewhere (GateAdminDashboard,
   // GatePassApproval, the muster/report exports) still recognize it so any
   // already-submitted pass with this outing_type keeps displaying correctly.
-  { value: 'travelling_to_another_office', label: 'Travelling to Another Office', desc: 'No LOP deduction — after your manager approves, routed to the gate admin at your current office' },
+  { value: 'travelling_to_another_office', label: 'Travelling to Another Office', desc: 'No LOP deduction — marked Out at your office and Arrived at the destination office' },
 ];
+
+const selectCls = 'mt-1 w-full h-10 rounded-md border border-input bg-background px-3 text-sm';
 
 export default function GatePassRequest() {
   const [user, setUser] = useState(null);
-  const [myPasses, setMyPasses] = useState([]);
   const [locations, setLocations] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler', current_location: '', destination_location: '' });
-  const [activeTab, setActiveTab] = useState('active');
-  const [employees, setEmployees] = useState({});
+  const [form, setForm] = useState({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', expected_arrival_time: '', vehicle_type: '2_wheeler', current_location: '', destination_location: '' });
+  const [view, setView] = useState('passes');
+  const [openId, setOpenId] = useState(null);
+  const [request, setRequest] = useState(null);
+  const { board, error, refreshing, reload } = useGateBoard({ scope: 'mine' });
+  const passes = board?.passes || [];
+  const filters = usePassFilters(passes);
 
   useEffect(() => {
-    loadData();
+    (async () => {
+      const currentUser = await base44.auth.me();
+      setUser(currentUser);
+      const [locs, empRecords] = await Promise.all([
+        base44.entities.AppLocation.filter({ is_active: true }),
+        base44.entities.Employee.filter({ user_id: currentUser.id }),
+      ]);
+      setLocations(locs);
+      // Pre-fill the departure office with the employee's own assigned office — still editable.
+      const homeLocation = empRecords?.[0]?.work_location || '';
+      if (locs.some(l => l.name === homeLocation)) setForm(f => ({ ...f, current_location: f.current_location || homeLocation }));
+    })().catch(err => toast.error(err.message || 'Could not load offices'));
   }, []);
 
-  const loadData = async () => {
-    setLoading(true);
-    const currentUser = await base44.auth.me();
-    setUser(currentUser);
-    const [passes, locs, empRecords, allEmployees] = await Promise.all([
-      base44.entities.GatePass.filter({ employee_user_id: currentUser.id }),
-      base44.entities.AppLocation.filter({ is_active: true }),
-      base44.entities.Employee.filter({ user_id: currentUser.id }),
-      base44.entities.Employee.list(),
-    ]);
-    passes.sort((a, b) => new Date(b.created_date) - new Date(a.created_date));
-    setMyPasses(passes);
-    setLocations(locs);
-    const empMap = {};
-    allEmployees.forEach(e => { empMap[e.user_id] = e; });
-    setEmployees(empMap);
-    // Pre-fill the departure-location dropdown with the employee's own
-    // assigned office (Location Master) — still editable, just saves the
-    // common case (departing from your usual office) a click.
-    const homeLocation = empRecords?.[0]?.work_location || '';
-    if (homeLocation) setForm(f => ({ ...f, current_location: homeLocation }));
-    setLoading(false);
-  };
+  const isTravelForm = form.outing_type === 'travelling_to_another_office';
+  const openTrip = passes.find(p => p.outing_type === 'travelling_to_another_office' && p.destination_location && ['pending_approval', 'approved', 'departed'].includes(p.status));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -114,25 +79,32 @@ export default function GatePassRequest() {
       return;
     }
     setSubmitting(true);
-    const empRecords = await base44.entities.Employee.filter({ user_id: user.id });
-    const emp = empRecords?.[0];
     const isOfficial = form.outing_type === 'official_outing';
-    const gatePass = await base44.entities.GatePass.create({
-      user_id: user.id,
-      employee_user_id: user.id,
-      outing_type: form.outing_type,
-      reason: form.reason,
-      expected_return_time: form.expected_return_time || null,
-      request_date: format(new Date(), 'yyyy-MM-dd'),
-      requested_at: nowIST(),
-      status: 'pending_approval',
-      manager_approval_status: 'pending',
-      manager_user_id: emp?.reporting_manager_id || null,
-      lop_deduction_days: 0,
-      current_location: form.current_location,
-      ...(isOfficial ? { vehicle_type: form.vehicle_type } : {}),
-      ...(isTravelling ? { destination_location: form.destination_location } : {}),
-    });
+    let gatePass;
+    try {
+      const empRecords = await base44.entities.Employee.filter({ user_id: user.id });
+      const emp = empRecords?.[0];
+      gatePass = await base44.entities.GatePass.create({
+        user_id: user.id,
+        employee_user_id: user.id,
+        outing_type: form.outing_type,
+        reason: form.reason,
+        expected_return_time: isTravelling ? null : form.expected_return_time || null,
+        request_date: format(new Date(), 'yyyy-MM-dd'),
+        requested_at: nowIST(),
+        status: 'pending_approval',
+        manager_approval_status: 'pending',
+        manager_user_id: emp?.reporting_manager_id || null,
+        lop_deduction_days: 0,
+        current_location: form.current_location,
+        ...(isOfficial ? { vehicle_type: form.vehicle_type } : {}),
+        ...(isTravelling ? { destination_location: form.destination_location, expected_arrival_time: form.expected_arrival_time || null } : {}),
+      });
+    } catch (err) {
+      toast.error(err.message || 'Could not submit the gate pass');
+      setSubmitting(false);
+      return;
+    }
 
     // Official outing: start Field Duty GPS tracking immediately, without waiting for
     // manager approval — best-effort, never blocks the gate pass request itself.
@@ -154,41 +126,25 @@ export default function GatePassRequest() {
       } catch {
         toast.success('Gate pass submitted.'); // tracking is a bonus; the request itself already succeeded
       }
+    } else {
+      toast.success('Gate pass submitted for approval.');
     }
 
-    // Keep the departure location pre-filled for the next request (usually
-    // the same office) instead of clearing it back to blank.
-    setForm({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', vehicle_type: '2_wheeler', current_location: form.current_location, destination_location: '' });
+    // Keep the departure office for the next request.
+    setForm({ outing_type: 'unofficial_outing', reason: '', expected_return_time: '', expected_arrival_time: '', vehicle_type: '2_wheeler', current_location: form.current_location, destination_location: '' });
     setShowForm(false);
-    await loadData();
+    await reload();
     setSubmitting(false);
   };
 
-  const getOutingLabel = (type) => OUTING_TYPES.find(o => o.value === type)?.label || type;
-
-  if (loading) return <div className="p-8 text-center text-gray-500">Loading...</div>;
-
-  const activePasses = myPasses.filter(p => ['pending_approval', 'approved', 'departed'].includes(p.status));
-
-  const handleCancel = async (pass) => {
-    if (!window.confirm('Cancel this gate pass request?')) return;
-    try {
-      await base44.entities.GatePass.update(pass.id, { status: 'cancelled' });
-      toast.success('Gate pass request cancelled');
-      loadData();
-    } catch (err) {
-      toast.error(err.message || 'Failed to cancel this request');
-    }
-  };
-
   return (
-    <div className="p-4 sm:p-6 max-w-3xl mx-auto">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
             <LogOut className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600 flex-shrink-0" /> My Gate Passes
           </h1>
-          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Request permission to leave office premises</p>
+          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Request permission to leave the office or travel to another office</p>
         </div>
         <Button onClick={() => setShowForm(!showForm)} className="gap-2 self-start sm:self-auto">
           <Plus className="w-4 h-4" /> New Request
@@ -196,82 +152,48 @@ export default function GatePassRequest() {
       </div>
 
       {showForm && (
-        <Card className="mb-6 border-blue-200">
-          <CardHeader>
-            <CardTitle className="text-lg">New Gate Pass Request</CardTitle>
-          </CardHeader>
+        <Card className="border-blue-200">
+          <CardHeader className="pb-3"><CardTitle className="text-lg">New gate pass request</CardTitle></CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <Label>Outing Type *</Label>
-                <Select value={form.outing_type} onValueChange={v => setForm(f => ({ ...f, outing_type: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {OUTING_TYPES.map(ot => (
-                      <SelectItem key={ot.value} value={ot.value}>
-                        <span className="font-medium">{ot.label}</span>
-                        <span className="text-xs text-gray-400 ml-2">— {ot.desc}</span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-gray-500 mt-1">
-                  {OUTING_TYPES.find(o => o.value === form.outing_type)?.desc}
-                </p>
+                <Label htmlFor="gp-type">Outing type *</Label>
+                <select id="gp-type" className={selectCls} value={form.outing_type} onChange={e => setForm(f => ({ ...f, outing_type: e.target.value }))}>
+                  {OUTING_TYPES.map(ot => <option key={ot.value} value={ot.value}>{ot.label}</option>)}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">{OUTING_TYPES.find(o => o.value === form.outing_type)?.desc}</p>
               </div>
 
-              {/* Departure location — asked for EVERY outing type, not just
-                  "Travelling to Another Office". This is how the request
-                  gets routed to the right gate admin: whichever office is
-                  selected here, only the gate admin(s) assigned to that
-                  office (Admin Panel → Add/Edit User) can see and act on
-                  this gate pass once your manager approves it. */}
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 space-y-3">
-                <Label className="flex items-center gap-1.5 text-blue-800">
-                  <MapPin className="w-4 h-4" /> Departure Location *
-                </Label>
-                <p className="text-xs text-blue-700 -mt-2">
-                  After your manager approves, this request is routed to the gate admin assigned to this office.
+              {isTravelForm && openTrip && (
+                <p role="alert" className="text-sm text-amber-800 bg-amber-50 rounded-md px-3 py-2">
+                  You already have an open trip ({openTrip.current_location} → {openTrip.destination_location}). It must be completed or cancelled before you can request another.
                 </p>
-                <div className={`grid grid-cols-1 gap-3 ${form.outing_type === 'travelling_to_another_office' ? 'sm:grid-cols-2' : ''}`}>
-                  <div>
-                    <Label className="text-xs text-gray-600">
-                      {form.outing_type === 'travelling_to_another_office' ? 'Departing From *' : 'Office *'}
-                    </Label>
-                    <Select value={form.current_location} onValueChange={v => setForm(f => ({ ...f, current_location: v }))}>
-                      <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
-                      <SelectContent>
-                        {locations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {form.outing_type === 'travelling_to_another_office' && (
-                    <div>
-                      <Label className="text-xs text-gray-600">Travelling To *</Label>
-                      <Select value={form.destination_location} onValueChange={v => setForm(f => ({ ...f, destination_location: v }))}>
-                        <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
-                        <SelectContent>
-                          {locations.filter(l => l.name !== form.current_location).map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
-                </div>
-              </div>
-              {form.outing_type === 'travelling_to_another_office' && (
-                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-                  <Label className="flex items-center gap-1.5 text-indigo-800">
-                    <MapPin className="w-4 h-4" /> Route
-                  </Label>
-                  <p className="text-xs text-indigo-700 mt-1">
-                    {form.current_location || 'Your departure office'} → {form.destination_location || 'destination'}
-                  </p>
-                </div>
               )}
+
+              {/* The departure office decides which gate admin handles the pass */}
+              <div className={`grid grid-cols-1 gap-3 ${isTravelForm ? 'sm:grid-cols-[1fr_auto_1fr] sm:items-end' : ''}`}>
+                <div>
+                  <Label htmlFor="gp-from" className="flex items-center gap-1.5"><MapPin className="w-4 h-4 text-blue-600" /> {isTravelForm ? 'Departing from *' : 'Office you are leaving *'}</Label>
+                  <select id="gp-from" className={selectCls} value={form.current_location} onChange={e => setForm(f => ({ ...f, current_location: e.target.value, destination_location: f.destination_location === e.target.value ? '' : f.destination_location }))}>
+                    <option value="">Select office…</option>
+                    {locations.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}
+                  </select>
+                </div>
+                {isTravelForm && <>
+                  <ArrowRight className="hidden sm:block w-5 h-5 mb-2.5 text-indigo-500" />
+                  <div>
+                    <Label htmlFor="gp-to" className="flex items-center gap-1.5"><MapPin className="w-4 h-4 text-indigo-600" /> Destination office *</Label>
+                    <select id="gp-to" className={selectCls} value={form.destination_location} onChange={e => setForm(f => ({ ...f, destination_location: e.target.value }))}>
+                      <option value="">Select office…</option>
+                      {locations.filter(l => l.name !== form.current_location).map(l => <option key={l.id} value={l.name}>{l.name}</option>)}
+                    </select>
+                  </div>
+                </>}
+              </div>
               {form.outing_type === 'official_outing' && (
                 <div className="rounded-lg border border-orange-200 bg-orange-50 p-3">
                   <Label className="flex items-center gap-1.5 text-orange-800">
-                    <Route className="w-4 h-4" /> Field Duty tracking will start automatically
+                    <RouteIcon className="w-4 h-4" /> Field Duty tracking will start automatically
                   </Label>
                   <p className="text-xs text-orange-700 mt-1 mb-2">Since this is an official outing, GPS distance tracking begins the moment you submit — for a fair km-based travel reimbursement per the Travel Policy.</p>
                   <Label className="text-xs text-gray-600 mb-1.5 block">Vehicle you'll be using</Label>
@@ -288,132 +210,52 @@ export default function GatePassRequest() {
                 </div>
               )}
               <div>
-                <Label>Reason (optional)</Label>
-                <Textarea
-                  value={form.reason}
-                  onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
-                  placeholder="Enter reason or details..."
-                  rows={3}
-                />
+                <Label htmlFor="gp-eta">{isTravelForm ? 'Expected arrival time (optional)' : 'Expected return time (optional)'}</Label>
+                <Input id="gp-eta" type="datetime-local" className="mt-1"
+                  value={isTravelForm ? form.expected_arrival_time : form.expected_return_time}
+                  onChange={e => setForm(f => ({ ...f, [isTravelForm ? 'expected_arrival_time' : 'expected_return_time']: e.target.value }))} />
               </div>
               <div>
-                <Label>Expected Return Time (optional)</Label>
-                <Input
-                  type="datetime-local"
-                  value={form.expected_return_time}
-                  onChange={e => setForm(f => ({ ...f, expected_return_time: e.target.value }))}
-                />
+                <Label htmlFor="gp-reason">Reason (optional)</Label>
+                <Textarea id="gp-reason" className="mt-1" value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} placeholder="Enter reason or details..." rows={3} />
               </div>
               <div className="flex gap-3">
-                <Button type="submit" disabled={submitting}>
-                  {submitting ? 'Submitting...' : 'Submit Request'}
+                <Button type="submit" disabled={submitting || !user || (isTravelForm && !!openTrip)}>
+                  {submitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{submitting ? 'Submitting…' : 'Submit request'}
                 </Button>
-                <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
+                <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Close</Button>
               </div>
             </form>
           </CardContent>
         </Card>
       )}
 
-      {/* Tabs */}
-      <div className="flex gap-2 mb-5 border-b dark:border-gray-700 pb-2 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab('active')}
-          className={`flex-shrink-0 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            activeTab === 'active' ? 'bg-blue-600 text-white' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-          }`}
-        >
-          Active Passes
-          {activePasses.length > 0 && (
-            <span className={`ml-2 px-1.5 py-0.5 rounded-full text-xs ${activeTab === 'active' ? 'bg-white text-blue-600' : 'bg-blue-100 text-blue-700'}`}>
-              {activePasses.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab('history')}
-          className={`flex-shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            activeTab === 'history' ? 'bg-blue-600 text-white' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-          }`}
-        >
-          <History className="w-4 h-4" /> History
-        </button>
+      <div className="flex gap-2">
+        <Button size="sm" variant={view === 'passes' ? 'default' : 'outline'} onClick={() => setView('passes')}>My passes</Button>
+        <Button size="sm" variant={view === 'history' ? 'default' : 'outline'} onClick={() => setView('history')}><History className="w-4 h-4 mr-1.5" />Month & calendar history</Button>
       </div>
 
-      {activeTab === 'active' && (
-        <div className="space-y-4">
-          {activePasses.length === 0 && (
-            <div className="text-center py-12 text-gray-400">No active gate pass requests.</div>
-          )}
-          {activePasses.map(pass => (
-            <Card key={pass.id} className="hover:shadow-md transition-shadow">
-              <CardContent className="p-4 sm:p-5">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <Badge variant="outline" className="text-xs">{getOutingLabel(pass.outing_type)}</Badge>
-                      {pass.field_trip_id && (
-                        <Badge className="text-xs bg-orange-100 text-orange-700 flex items-center gap-1">
-                          <Route className="w-3 h-3" /> Field Duty tracked
-                        </Badge>
-                      )}
-                    </div>
-                    {pass.outing_type === 'travelling_to_another_office' ? (
-                      <p className="text-sm text-indigo-600 flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {pass.current_location} → {pass.destination_location}</p>
-                    ) : pass.current_location && (
-                      <p className="text-sm text-blue-600 flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {pass.current_location}</p>
-                    )}
-                    {pass.reason && <p className="font-medium text-gray-900 dark:text-gray-100">{pass.reason}</p>}
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                      Requested: {safeDate(pass.created_date, 'dd MMM yyyy, hh:mm a')}
-                    </p>
-                    {pass.expected_return_time && (
-                      <p className="text-sm text-gray-500 dark:text-gray-400">
-                        Expected return: {safeDate(pass.expected_return_time, 'dd MMM yyyy, hh:mm a')}
-                      </p>
-                    )}
-                    {pass.status !== 'pending_approval' && pass.status !== 'cancelled' && pass.manager_user_id && (
-                      <p className="text-sm text-gray-500 mt-1">
-                        Approver: {employees[pass.manager_user_id]?.display_name || 'Reporting Manager'}
-                        {pass.manager_approval_date && ` · ${safeDate(pass.manager_approval_date, 'dd MMM, hh:mm a')}`}
-                      </p>
-                    )}
-                    {pass.manager_comment && (
-                      <p className="text-sm text-orange-600 mt-1">Comment: {pass.manager_comment}</p>
-                    )}
-                    {pass.departure_time && (
-                      <p className="text-sm text-orange-600 mt-1 flex items-center gap-1">
-                        <LogOut className="w-3.5 h-3.5" /> Departed: {safeDate(pass.departure_time, 'hh:mm a')}
-                      </p>
-                    )}
-                    {pass.return_time && (
-                      <p className="text-sm text-green-600 mt-1 flex items-center gap-1">
-                        <LogIn className="w-3.5 h-3.5" /> Returned: {safeDate(pass.return_time, 'hh:mm a')}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex flex-col items-end gap-1.5">
-                    <Badge className={STATUS_COLORS[pass.status]}>
-                      {STATUS_LABELS[pass.status]}
-                    </Badge>
-                    {(() => { const m = managerApprovalStatus(pass.status); return m ? <Badge className={m.className}>{m.label}</Badge> : null; })()}
-                    {pass.status === 'pending_approval' && (
-                      <Button size="sm" variant="outline" className="text-red-600 border-red-200 hover:bg-red-50"
-                        onClick={() => handleCancel(pass)}>
-                        Cancel
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+      {view === 'passes' && <>
+        {error && <p role="alert" className="text-sm text-red-600">{error} <button className="underline" onClick={reload}>Try again</button></p>}
+        {!board ? !error && <Loading /> : <>
+          <SummaryCards passes={passes} active={filters.f.group} onPick={(group) => filters.set({ group })} />
+          <FilterBar filters={filters} passes={passes} onRefresh={reload} refreshing={refreshing} />
+          <div className="space-y-3">
+            {filters.rows.length === 0
+              ? <Empty title={passes.length ? 'Nothing matches' : 'You have no gate passes yet'} hint={passes.length ? 'Try another tab or clear the filters.' : 'Use New Request to raise one.'} />
+              : filters.rows.map(p => (
+                <PassCard key={p.id} pass={p} showEmployee={false} onOpen={(x) => setOpenId(x.id)}
+                  actions={p.status === 'pending_approval' ? <ActionButton action="cancel_request" onClick={() => setRequest({ action: 'cancel_request', pass: p })} />
+                    : p.status === 'approved' && p.can.cancel_trip ? <ActionButton action="cancel_trip" onClick={() => setRequest({ action: 'cancel_trip', pass: p })} /> : null} />
+              ))}
+          </div>
+        </>}
+      </>}
 
-      {activeTab === 'history' && user && (
-        <GatePassHistory filterUserId={user.id} showEmployeeName={false} />
-      )}
+      {view === 'history' && user && <GatePassHistory filterUserId={user.id} showEmployeeName={false} />}
+
+      <ConfirmAction request={request} offices={board?.offices} onClose={() => setRequest(null)} onDone={reload} />
+      <GatePassDetail passId={openId} onClose={() => setOpenId(null)} onChanged={reload} />
     </div>
   );
 }

@@ -71,6 +71,13 @@ router.get('/entity-types', async (_req, res) => {
 // Permanent records (signed policy acknowledgements) cannot be changed or deleted through the admin entity tools.
 const PERMANENT_TYPES = new Set(['LdPolicyAck', 'HrEmailAudit']);
 router.use('/entities/:type', (req, res, next) => (PERMANENT_TYPES.has(req.params.type) && req.method !== 'GET' ? res.status(403).json({ error: 'This is a permanent record and cannot be changed or deleted' }) : next()));
+// gate pass movements are an audit record: once an employee has gone out, the raw record editor cannot change or delete it
+router.use('/entities/GatePass/:id', async (req, res, next) => {
+  if (req.method === 'GET') return next();
+  const row = await one("SELECT data FROM entities WHERE type='GatePass' AND id=$1", [req.params.id]);
+  if (row && JSON.parse(row.data).departure_time) return res.status(403).json({ error: 'A gate pass with a recorded departure is an audit record and cannot be edited or deleted here' });
+  return next();
+});
 
 router.get('/entities/:type', async (req, res) => {
   const { type } = req.params;

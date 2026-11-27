@@ -573,25 +573,25 @@ export function computeGatePasses(ctx, model, scope, from, to, today, attCur, { 
   for (const g of sel) {
     const uid = g.employee_user_id || g.user_id, e = model.byUid[uid], dp = e?.dept || 'Unassigned';
     const st = g.status, d = dayOf(g.request_date || g._createdAt);
-    const dep = ts(g.departure_time), ret = ts(g.return_time);
+    const dep = ts(g.departure_time), ret = ts(g.return_time || g.arrival_time);   // inter-office trips end on arrival
     c.byType[g.outing_type || 'other'] = (c.byType[g.outing_type || 'other'] || 0) + 1;
     c.byStatus[st] = (c.byStatus[st] || 0) + 1;
     c.byDept[dp] = (c.byDept[dp] || 0) + 1; c.byDay[d] = (c.byDay[d] || 0) + 1;
     perEmp[uid] = (perEmp[uid] || 0) + 1;
     const auto = !!g.auto_closed || st === 'auto_closed';
     if (auto) { c.autoClosed++; autoByEmp[uid] = (autoByEmp[uid] || 0) + 1; }
-    if (st === 'returned') c.returned++;
+    if (st === 'returned' || st === 'completed') c.returned++;
     else if (st === 'cancelled') c.cancelled++;
     else if (st === 'rejected') c.rejected++;
     else if (st === 'pending_approval') c.pending++;
     const isOpen = st === 'approved' || st === 'departed';
     if (isOpen) c.open++;
-    const exp = ts(g.expected_return_time);
+    const exp = ts(g.expected_return_time || g.expected_arrival_time);
     const overdue = isOpen && ((exp != null && exp < now) || d < today);
     if (overdue) c.overdue++;
     let durMin = null;
     if (dep != null && ret != null && ret > dep && !auto) { durMin = Math.round((ret - dep) / 60000); c.durationMin.push(durMin); }
-    const base = { id: g.id, code: e?.code || '', name: e?.name || g.employee_name || '', dept: dp, type: label(g.outing_type), reason: g.reason || '', created: g._createdAt, date: d, status: label(st), approval: label(g.manager_approval_status), exit: g.departure_time || '', expected: g.expected_return_time || '', returned: g.return_time || '', durationMin: durMin, closure: auto ? 'Auto-closed' : st === 'returned' ? 'Marked returned' : '', approver: model.byUid[g.manager_user_id || g.manager_id]?.name || '', location: g.current_location || '' };
+    const base = { id: g.id, code: e?.code || '', name: e?.name || g.employee_name || '', dept: dp, type: label(g.outing_type), reason: g.reason || '', created: g._createdAt, date: d, status: label(st), approval: label(g.manager_approval_status), exit: g.departure_time || '', expected: g.expected_return_time || g.expected_arrival_time || '', returned: g.return_time || g.arrival_time || '', durationMin: durMin, closure: auto ? 'Auto-closed' : st === 'returned' ? 'Marked returned' : st === 'completed' ? 'Arrived at destination' : '', approver: model.byUid[g.manager_user_id || g.manager_id]?.name || '', location: g.current_location || '' };
     if (detail) rows.push(base);
     const flag = (kind, sev, why, action, expected = '', actual = '') => exceptions.push({ ...base, kind, sev, why, action, expected, actual });
     if (overdue) flag('Open beyond expected return', exp != null && exp < now ? 'High' : 'Medium', exp != null ? `Expected back ${new Date(exp).toISOString().slice(0, 16).replace('T', ' ')} UTC` : 'Still open from an earlier day with no return recorded.', 'Gate admin to confirm whether the employee has returned and close the pass.', exp != null ? 'Returned by expected time' : 'Closed same day', 'Still open');
@@ -605,7 +605,7 @@ export function computeGatePasses(ctx, model, scope, from, to, today, attCur, { 
     // personal / unofficial outing on a day the attendance says absent or leave is worth checking; official outings are legitimate work
     if (g.outing_type !== 'official_outing' && attCur) {
       const rec = ctx.att.map.get(`${uid}|${d}`);
-      if (rec && ['absent', 'leave'].includes(rec.s) && ['returned', 'departed', 'auto_closed'].includes(st)) flag('Outing on a day marked absent / leave', 'Low', `Attendance for the day reads "${label(rec.s)}" although the pass shows movement.`, 'HR to reconcile attendance with the gate log.');
+      if (rec && ['absent', 'leave'].includes(rec.s) && ['returned', 'departed', 'auto_closed', 'completed'].includes(st)) flag('Outing on a day marked absent / leave', 'Low', `Attendance for the day reads "${label(rec.s)}" although the pass shows movement.`, 'HR to reconcile attendance with the gate log.');
     }
   }
   const lim = scaled(cfg.gpFrequent, days);

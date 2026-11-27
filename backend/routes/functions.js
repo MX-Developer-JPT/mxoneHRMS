@@ -29,6 +29,7 @@ import { isRoasterPolicy, roasterErrors, departmentAllowed, isDuhai, ROASTER_EXC
 import { loadRoasterConfig, saveRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
 import { sendProbationReviewMail, withHrCopy } from '../utils/probationMail.js';
+import { isTravel, passNo, travelLabel, passesForDate } from '../utils/gatePassRules.js';
 import { COMPETENCIES, SCALE, OPEN_QUESTIONS, MIN_RATERS, LEGACY_PERIOD, currentPeriod, normalizePeriod, periodLabel, validateSubmission, summarize, periodsOf } from '../utils/feedback360.js';
 // Statutory EPF wage ceiling (monthly basic). Employee PF = 12%, employer 13% on min(basic, this). Was 15,000; now 25,000.
 const PF_WAGE_CEILING = 25000;
@@ -82,7 +83,7 @@ async function flagLeftWithoutGatePass(records) {
   const gpDays = new Set();
   for (const r of await all("SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2", [dates[0], dates[dates.length - 1]])) {
     const g = JSON.parse(r.data);
-    if (g.employee_user_id && ['approved', 'departed', 'returned', 'auto_closed'].includes(g.status)) gpDays.add(`${g.employee_user_id}__${g.request_date}`);
+    if (g.employee_user_id && ['approved', 'departed', 'returned', 'auto_closed', 'completed'].includes(g.status)) gpDays.add(`${g.employee_user_id}__${g.request_date}`);
   }
   const shifts = {}; let dflt = { start_time: '09:00', end_time: '18:00' };
   for (const r of await all("SELECT data FROM entities WHERE type='Shift'")) { const sh = JSON.parse(r.data); shifts[sh.id] = sh; if (sh.is_default) dflt = sh; }
@@ -2741,6 +2742,10 @@ router.post('/:name', async (req, res) => {
     return await handleLd(name, p, cu, res);
   }
   // Performance Management & Appraisal (routes/appraisal.js) — every ap_* function
+  if (name.startsWith('gp_')) {
+    const { handleGatePass } = await import('./gatepass.js');
+    return await handleGatePass(name, p, cu, res);
+  }
   if (name.startsWith('ap_')) {
     const { handleAppraisal } = await import('./appraisal.js');
     return await handleAppraisal(name, p, cu, res);
@@ -6962,7 +6967,7 @@ router.post('/:name', async (req, res) => {
       const reportGatePassRows = parseEntities(await all(
         "SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2",
         [monthStart, monthEnd]
-      )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
+      )).filter(g => ['departed', 'returned', 'auto_closed', 'completed'].includes(g.status));
       const reportGatePassMap = {};
       const reportOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
       for (const g of reportGatePassRows) {
@@ -7271,7 +7276,7 @@ router.post('/:name', async (req, res) => {
       const mGatePassRows = parseEntities(await all(
         "SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2",
         [monthStart, monthEnd]
-      )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
+      )).filter(g => ['departed', 'returned', 'auto_closed', 'completed'].includes(g.status));
       const mGatePassMap = {};
       const mOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
       for (const g of mGatePassRows) {
@@ -8241,7 +8246,7 @@ router.post('/:name', async (req, res) => {
       const swGatePassRows = parseEntities(await all(
         "SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2",
         [swMonthStart, swMonthEnd]
-      )).filter(g => ['departed', 'returned', 'auto_closed'].includes(g.status));
+      )).filter(g => ['departed', 'returned', 'auto_closed', 'completed'].includes(g.status));
       const swGatePassMap = {};
       const swOutingLabels = { official_outing: 'Official Outing', unofficial_outing: 'Unofficial Outing', half_day: 'Half Day', short_break: 'Short Break', early_leave: 'Early Leave', travelling_to_another_office: 'Travelling to Another Office' };
       for (const g of swGatePassRows) {
@@ -8328,7 +8333,7 @@ router.post('/:name', async (req, res) => {
           const statusLabel = isPHL ? `Present (Half Day ${halfLeaveCode(rec)})` : (status ? status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase()) : '');
           const gatePass = swGatePassMap[`${emp.user_id}|${ds}`] || null;
           const gatePassText = gatePass
-            ? `${gatePass.status === 'departed' ? 'OUT NOW — ' : ''}${swOutingLabels[gatePass.outing_type] || gatePass.outing_type || 'Gate Pass'}${gatePass.reason ? ` — ${gatePass.reason}` : ''}`
+            ? `${travelLabel(gatePass) ? `${travelLabel(gatePass)} (from ${gatePass.current_location}) — ` : gatePass.status === 'departed' ? 'OUT NOW — ' : ''}${swOutingLabels[gatePass.outing_type] || gatePass.outing_type || 'Gate Pass'}${gatePass.reason ? ` — ${gatePass.reason}` : ''}`
             : '';
 
           const row = wsSw.getRow(swRowNum++);
@@ -9642,26 +9647,30 @@ router.post('/:name', async (req, res) => {
       // since "currently out" only makes sense for one specific day.
       let gatePasses = {};
       if (date) {
-        let gpQuery = "SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date'=$1";
+        // that day's passes, plus inter-office trips still open on that day or completed on it (read live from the pass, so
+        // this page and the gate screens can never disagree)
+        let gpQuery = "SELECT data, created_at FROM entities WHERE type='GatePass' AND (data::jsonb->>'request_date'=$1 OR (data::jsonb->>'outing_type'='travelling_to_another_office' AND (status='departed' OR LEFT(data::jsonb->>'arrival_time',10)=$1)))";
         const gpParams = [date];
         if (uid) { gpQuery += ` AND data::jsonb->>'employee_user_id'=$2`; gpParams.push(uid); }
         const gpRows = await all(gpQuery, gpParams);
-        let gpRecords = gpRows.map(r => JSON.parse(r.data)).filter(g => g.employee_user_id);
+        let gpRecords = gpRows.map(r => { const g = JSON.parse(r.data); return { ...g, created_date: g.created_date || r.created_at }; }).filter(g => g.employee_user_id);
         if (scopedIds) gpRecords = gpRecords.filter(g => scopedIds.includes(g.employee_user_id));
-        // Only outings that are actually live/relevant for a "gate pass today"
-        // view — a rejected/cancelled/still-pending request shouldn't show.
-        gpRecords = gpRecords.filter(g => ['approved', 'departed', 'returned', 'auto_closed'].includes(g.status));
+        gpRecords = passesForDate(gpRecords, date, istTodayStr()).sort((a, b) => String(a.departure_time || a.created_date || '').localeCompare(String(b.departure_time || b.created_date || '')));
         for (const g of gpRecords) {
           const prev = gatePasses[g.employee_user_id];
-          if (!prev || String(g.created_date || '') > String(prev.created_date || '')) {
-            gatePasses[g.employee_user_id] = {
-              status: g.status, outing_type: g.outing_type, reason: g.reason,
-              departure_time: g.departure_time, return_time: g.return_time,
-              expected_return_time: g.expected_return_time,
-              is_out: g.status === 'departed',
-              created_date: g.created_date,
-            };
-          }
+          const leg = isTravel(g) ? { id: g.id, pass_no: passNo(g), from: g.current_location, to: g.destination_location, departure_time: g.departure_time, arrival_time: g.arrival_time, label: travelLabel(g), status: g.status } : null;
+          const travel = [...(prev?.travel || []), ...(leg ? [leg] : [])];
+          // an open outing always wins; otherwise the most recent one
+          if (prev?.is_out && g.status !== 'departed') { prev.travel = travel; continue; }
+          gatePasses[g.employee_user_id] = {
+            status: g.status, outing_type: g.outing_type, reason: g.reason,
+            departure_time: g.departure_time, return_time: g.return_time,
+            expected_return_time: g.expected_return_time,
+            current_location: g.current_location, destination_location: g.destination_location, arrival_time: g.arrival_time,
+            travel_label: travelLabel(g), in_transit: isTravel(g) && g.status === 'departed', travel,
+            is_out: g.status === 'departed',
+            created_date: g.created_date,
+          };
         }
       }
 

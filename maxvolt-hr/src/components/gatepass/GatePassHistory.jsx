@@ -1,4 +1,5 @@
-﻿import GatePassTimeline, { requestedAt } from '@/components/gatepass/GatePassTimeline';
+﻿import { requestedAt } from '@/components/gatepass/GatePassTimeline';
+import GatePassDetail from '@/components/gatepass/GatePassDetail';
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -18,6 +19,7 @@ const STATUS_COLORS = {
   approved: 'bg-blue-100 text-blue-800',
   rejected: 'bg-red-100 text-red-800',
   departed: 'bg-orange-100 text-orange-800',
+  completed: 'bg-emerald-100 text-emerald-800',
   returned: 'bg-green-100 text-green-800',
   auto_closed: 'bg-purple-100 text-purple-800',
   cancelled: 'bg-gray-100 text-gray-800',
@@ -28,6 +30,7 @@ const STATUS_DOTS = {
   approved: 'bg-blue-500',
   rejected: 'bg-red-500',
   departed: 'bg-orange-500',
+  completed: 'bg-emerald-500',
   returned: 'bg-green-500',
   auto_closed: 'bg-purple-500',
   cancelled: 'bg-gray-500',
@@ -38,6 +41,7 @@ const STATUS_LABELS = {
   approved: 'Approved',
   rejected: 'Rejected',
   departed: 'Departed',
+  completed: 'Completed',
   returned: 'Returned',
   auto_closed: 'Auto-Closed',
   cancelled: 'Cancelled',
@@ -144,7 +148,7 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
       </div>
 
       <div className="flex gap-2 mb-4 flex-wrap">
-        {['all', 'pending_approval', 'approved', 'departed', 'returned', 'auto_closed', 'rejected'].map(s => (
+        {['all', 'pending_approval', 'approved', 'departed', 'returned', 'completed', 'auto_closed', 'cancelled', 'rejected'].map(s => (
           <Button
             key={s}
             size="sm"
@@ -227,6 +231,11 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
                             <LogOut className="w-3 h-3" /> Out: {safeDate(pass.departure_time, 'hh:mm a')}
                           </p>
                         )}
+                        {pass.arrival_time && (
+                          <p className="text-emerald-600 flex items-center gap-1 justify-end">
+                            <LogIn className="w-3 h-3" /> Arrived: {safeDate(pass.arrival_time, 'hh:mm a')}
+                          </p>
+                        )}
                         {pass.return_time && (
                           <p className="text-green-600 flex items-center gap-1 justify-end">
                             <LogIn className="w-3 h-3" /> In: {safeDate(pass.return_time, 'hh:mm a')}
@@ -249,44 +258,7 @@ export default function GatePassHistory({ filterUserId, filterManagerId, showEmp
         </div>
       )}
 
-      {/* Detail Dialog */}
-      <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Gate Pass Details</DialogTitle>
-          </DialogHeader>
-          {selected && (
-            <div className="space-y-3 text-sm">
-              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-                {showEmployeeName && <p><span className="font-medium">Employee:</span> {users[selected.employee_user_id]?.full_name}</p>}
-                {employees[selected.employee_user_id]?.department && (
-                  <p><span className="font-medium">Department:</span> {employees[selected.employee_user_id].department}</p>
-                )}
-                <p><span className="font-medium">Outing Type:</span> <Badge variant="outline">{selected.outing_type?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'N/A'}</Badge></p>
-                {selected.outing_type === 'travelling_to_another_office' ? (
-                  <p><span className="font-medium">Route:</span> {selected.current_location} → {selected.destination_location}</p>
-                ) : selected.current_location && (
-                  <p><span className="font-medium">Departing From:</span> {selected.current_location}</p>
-                )}
-                <p><span className="font-medium">Reason:</span> {selected.reason || '—'}</p>
-                <p><span className="font-medium">Date:</span> {safeDate(selected.request_date || selected.created_date, 'dd MMM yyyy')}</p>
-                {selected.expected_return_time && (
-                  <p><span className="font-medium">Expected Return:</span> {safeDate(selected.expected_return_time, 'dd MMM yyyy, hh:mm a')}</p>
-                )}
-                <p><span className="font-medium">Status:</span> <Badge className={STATUS_COLORS[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></p>
-              </div>
-
-              <GatePassTimeline pass={selected} approverName={employees[selected.manager_user_id]?.display_name || users[selected.manager_user_id]?.full_name || 'Reporting manager'} departedBy={selected.departed_by_name} returnedBy={selected.returned_by_name} />
-              {selected.status === 'auto_closed' && !selected.departure_time && (
-                <div className="bg-purple-50 rounded-lg p-4 space-y-1">
-                  <p className="font-semibold text-purple-700">Auto-Closed</p>
-                  <p className="text-purple-700">{selected.auto_closed_reason}</p>
-                </div>
-              )}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <GatePassDetail passId={selected?.id || null} onClose={() => setSelected(null)} onChanged={loadData} />
 
       {/* Calendar day detail dialog */}
       <Dialog open={!!calDayPasses} onOpenChange={() => setCalDayPasses(null)}>

@@ -240,7 +240,8 @@ export default function AllAttendance() {
       const record = attendanceMap[emp.user_id];
       const gatePass = gatePasses[emp.user_id] || null;
       if (record) return { ...record, _emp: emp, _gatePass: gatePass };
-      const offStatus = scheduledOffStatus(emp, date, holidaySet, shiftMap, defaultShift);
+      // someone on the road between offices (e.g. an overnight trip) with no record yet is on duty, not absent
+      const offStatus = scheduledOffStatus(emp, date, holidaySet, shiftMap, defaultShift) || (gatePass?.travel?.length ? 'on_duty' : null);
       return {
         id: `virtual_${emp.user_id}`,
         user_id: emp.user_id,
@@ -301,13 +302,14 @@ export default function AllAttendance() {
   // One definition per card: the number on the card and the rows shown when it is clicked always agree.
   const CARD_TESTS = {
     present: r => ['present','late','on_duty','work_from_home','short_attendance','half_day'].includes(r.status) || (r.check_in_time && !['absent','leave','holiday','week_off'].includes(r.status)),
-    absent: r => r.status === 'absent' || (!r.check_in_time && !r.status),
+    absent: r => !r._gatePass?.in_transit && (r.status === 'absent' || (!r.check_in_time && !r.status)),
     half_day: r => r.status === 'half_day' && !isHalfDayLeave(r),
     half_day_leave: r => isHalfDayLeave(r),
     leave: r => r.status === 'leave',
     late: r => r.late_minutes > 0 || r.late_arrival_minutes > 0,
     early_out: r => r.early_departure || r.early_departure_minutes > 0,
     gate_pass: r => !!r._gatePass,
+    travelling: r => !!r._gatePass?.in_transit,
     left_no_gp: r => !!r.left_without_gate_pass,
   };
   const filtered = useMemo(() => {
@@ -359,6 +361,7 @@ export default function AllAttendance() {
     earlyOut: rows.filter(CARD_TESTS.early_out).length,
     totalHours: rows.reduce((s, r) => s + (r.working_hours || 0), 0),
     gatePass: rows.filter(CARD_TESTS.gate_pass).length,
+    travelling: rows.filter(CARD_TESTS.travelling).length,
     leftNoGp: rows.filter(CARD_TESTS.left_no_gp).length,
     currentlyOut: rows.filter(r => r._gatePass?.is_out).length,
   }), [rows]);
@@ -666,6 +669,7 @@ export default function AllAttendance() {
             { label: 'Late', value: stats.late, color: 'text-orange-600', filter: 'late' },
             { label: 'Early Out', value: stats.earlyOut, color: 'text-amber-600', filter: 'early_out' },
             { label: 'On Gate Pass', value: stats.gatePass, color: 'text-orange-600', filter: 'gate_pass' },
+            { label: 'Travelling', value: stats.travelling, color: 'text-indigo-600', filter: 'travelling' },
             { label: 'Left w/o Gate Pass', value: stats.leftNoGp, color: 'text-red-600', filter: 'left_no_gp' },
           ].map(s => (
             <Card
@@ -711,6 +715,7 @@ export default function AllAttendance() {
                 { value: 'late', label: 'Late arrival' },
                 { value: 'early_out', label: 'Early out' },
                 { value: 'gate_pass', label: 'On Gate Pass' },
+                { value: 'travelling', label: 'Travelling between offices' },
                 { value: 'left_no_gp', label: 'Left without Gate Pass' },
               ]} />
               <MobileSelect value={deptFilter} onValueChange={setDeptFilter} label="Department" className="w-[160px]" options={[
@@ -1037,7 +1042,16 @@ export default function AllAttendance() {
                                 Half Day Leave
                               </Badge>
                             )}
-                            {record._gatePass && (
+                            {(record._gatePass?.travel || []).map((leg) => (
+                              <span key={leg.id} title={`Gate pass ${leg.pass_no}`}
+                                className={`inline-flex flex-wrap items-center gap-x-1.5 text-xs font-medium border rounded px-1.5 py-0.5 ${leg.status === 'departed' ? 'bg-indigo-100 text-indigo-900 border-indigo-300' : leg.status === 'completed' ? 'bg-emerald-50 text-emerald-900 border-emerald-200' : leg.status === 'cancelled' ? 'bg-red-50 text-red-800 border-red-300' : 'bg-sky-50 text-sky-900 border-sky-200'}`}>
+                                <span className="font-semibold">{leg.label || `Travel to ${leg.to}`}</span>
+                                <span>· {leg.from} → {leg.to}</span>
+                                {leg.departure_time && <span>· Left {clock12(leg.departure_time)}</span>}
+                                {leg.arrival_time && <span>· Arrived {clock12(leg.arrival_time)}</span>}
+                              </span>
+                            ))}
+                            {record._gatePass && !record._gatePass.travel?.length && (
                               <Badge
                                 className={`text-xs border ${record._gatePass.is_out ? 'bg-orange-100 text-orange-800 border-orange-300 animate-pulse' : 'bg-sky-100 text-sky-800 border-sky-200'}`}
                                 title={record._gatePass.reason || ''}
@@ -1047,7 +1061,7 @@ export default function AllAttendance() {
                                   ` — ${GATE_PASS_OUTING_LABELS[record._gatePass.outing_type] || record._gatePass.outing_type}`}
                               </Badge>
                             )}
-                            {record._gatePass && (record._gatePass.departure_time || record._gatePass.return_time) && (
+                            {record._gatePass && !record._gatePass.travel?.length && (record._gatePass.departure_time || record._gatePass.return_time) && (
                               <span className="inline-flex items-center gap-1 text-xs font-medium text-sky-900 bg-sky-50 border border-sky-200 rounded px-1.5 py-0.5" title="Gate pass movement">
                                 🚪 Out {record._gatePass.departure_time ? clock12(record._gatePass.departure_time) : '—'}
                                 {' · '}

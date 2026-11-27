@@ -23,7 +23,7 @@ const OFFICIAL = ['official_outing', 'travelling_to_another_office'];
 
 function attendanceNote(p) {
   if (!p.departure_time && !p.auto_closed) return null;
-  if (OFFICIAL.includes(p.outing_type) && ['departed', 'returned', 'auto_closed'].includes(p.status)) return 'Official outing — the day counts as a full day present, whatever the check-out time.';
+  if (OFFICIAL.includes(p.outing_type) && ['departed', 'returned', 'auto_closed', 'completed'].includes(p.status)) return 'Official outing — the day counts as a full day present, whatever the check-out time.';
   if (p.status === 'auto_closed' && p.departure_time && p.outing_type !== 'half_day') return 'Did not return by shift end — the departure time is used as the check-out and the day is graded by hours worked (half day / short attendance, never absent).';
   if (p.outing_type === 'half_day' && p.departure_time) return 'Half-day outing — the departure time is the check-out; the day is a half day.';
   return null;

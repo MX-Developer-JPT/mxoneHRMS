@@ -77,6 +77,15 @@ export async function markMissingAttendanceAsAbsent(targetDate) {
   )).map(r => JSON.parse(r.data));
   const onLeaveUserIds = new Set(approvedLeaves.map(l => l.user_id));
 
+  // Someone on an inter-office trip over this date (left that day or the day before, and had not arrived before it) is
+  // travelling, not absent. A trip left open longer than that no longer shields them.
+  const dayBefore = new Date(new Date(date + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
+  const travelling = await all(
+    "SELECT data::jsonb->>'employee_user_id' AS uid FROM entities WHERE type='GatePass' AND data::jsonb->>'outing_type'='travelling_to_another_office' AND LEFT(data::jsonb->>'departure_time',10) BETWEEN $1 AND $2 AND (status='departed' OR (status='completed' AND LEFT(data::jsonb->>'arrival_time',10) >= $2))",
+    [dayBefore, date]
+  );
+  for (const t of travelling) onLeaveUserIds.add(t.uid);
+
   let marked = 0;
   for (const emp of employees) {
     if (onLeaveUserIds.has(emp.user_id)) continue;
