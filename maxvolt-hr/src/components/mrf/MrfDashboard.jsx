@@ -79,6 +79,9 @@ export default function MrfDashboard({ onOpen, refreshKey = 0 }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [month, setMonth] = useState(() => new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 7));
+  const [reportReq, setReportReq] = useState('');
+  const [reporting, setReporting] = useState('');   // 'month' | a requisition id
   const [drill, setDrill] = useState(null);        // { title, mrfIds, candidates | null }
   const [openRow, setOpenRow] = useState(null);
   const [openRule, setOpenRule] = useState(null);
@@ -114,6 +117,13 @@ export default function MrfDashboard({ onOpen, refreshKey = 0 }) {
     setExporting(false);
   };
 
+  const funnelReport = async (key, args) => {
+    setReporting(key);
+    try { const r = await mrf('mrf_funnel_report', args); downloadBase64(r.base64, r.filename, r.mime); toast.success(`${r.filename} downloaded`); } catch (e) { toast.error(e.message); }
+    setReporting('');
+  };
+  const spin = (key) => (reporting === key ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Download className="w-4 h-4 mr-1.5" />);
+
   const o = data?.options || {};
   const sel = (key, all, list) => (
     <select className={selectCls} value={filters[key] || ''} onChange={(e) => set(key, e.target.value)} aria-label={all}>
@@ -134,9 +144,26 @@ export default function MrfDashboard({ onOpen, refreshKey = 0 }) {
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" size="sm" onClick={() => setFilters({})}>Clear filters</Button>
         <Button variant="outline" size="sm" onClick={() => load()} disabled={loading}><RefreshCw className={`w-4 h-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} />Refresh</Button>
-        <Button variant="outline" size="sm" onClick={exportXlsx} disabled={exporting || !data}>{exporting ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Download className="w-4 h-4 mr-1.5" />}Export to Excel</Button>
+        <Button variant="outline" size="sm" onClick={exportXlsx} disabled={exporting || !data}>{exporting ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Download className="w-4 h-4 mr-1.5" />}Export all MIS data</Button>
         <span className="text-xs text-muted-foreground ml-auto">{data ? `${data.mrfs.length} requisition(s)${data.org_wide ? '' : ' — yours only'} · updated ${fmt(data.generated_at, true)}` : ''}</span>
       </div>
+      <Card><CardContent className="p-3 space-y-2">
+        <p className="text-sm font-medium">Matrix and funnel report (Excel)</p>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 [&>*]:min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">Month<Input type="month" className="w-44 min-w-0" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
+            <Button size="sm" onClick={() => funnelReport('month', { month, filters })} disabled={!!reporting || !month}>{spin('month')}Download month report</Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select className={`${selectCls} flex-1 min-w-[12rem] !w-auto`} value={reportReq} onChange={(e) => setReportReq(e.target.value)} aria-label="Requisition for the report">
+              <option value="">Choose a requisition</option>
+              {(data?.mrfs || []).map((m) => <option key={m.id} value={m.id}>{[m.mrf_no || 'Older', m.designation, m.department].filter(Boolean).join(' · ')}</option>)}
+            </select>
+            <Button size="sm" onClick={() => funnelReport(reportReq, { requisition_id: reportReq })} disabled={!!reporting || !reportReq}>{spin(reportReq || 'none')}Download requisition report</Button>
+          </div>
+        </div>
+        <p className="text-[11px] text-muted-foreground">The month report covers requisitions submitted in that month: total funnel, matrix and one sheet per requisition. The filters above apply to it, except the financial year and dates.</p>
+      </CardContent></Card>
       <div className="flex border-b overflow-x-auto">{VIEWS.map(([k, l]) => <button key={k} type="button" onClick={() => setView(k)} className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 ${view === k ? 'border-primary text-primary font-medium' : 'border-transparent text-muted-foreground'}`}>{l}{k === 'delays' && data?.bottlenecks.length ? ` (${data.bottlenecks.reduce((s, b) => s + b.count, 0)})` : ''}</button>)}</div>
 
       {loading && !data ? <div className="py-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin" /></div> : !data ? <p className="text-sm text-muted-foreground py-8 text-center">The report could not be loaded.</p> : (
@@ -218,6 +245,7 @@ export default function MrfDashboard({ onOpen, refreshKey = 0 }) {
                               <span><b>{m.mrf_no || 'Older'}</b> · {m.designation}</span><span>Fulfilment <b>{m.fulfilment_pct}%</b> ({m.filled} of {m.positions})</span>
                               <span>Bottleneck: <b>{m.bottleneck ? `${m.bottleneck.label} — ${m.bottleneck.count}${m.bottleneck.breached ? `, longest ${m.bottleneck.max_days} days` : ''}` : 'none'}</b></span>
                               {m.on_hold_days > 0 && <span>On hold for {m.on_hold_days} day(s)</span>}
+                              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => funnelReport(m.id, { requisition_id: m.id })} disabled={!!reporting}>{spin(m.id)}Excel report</Button>
                             </div>
                             <Funnel compact stages={m.funnel} onStage={(s) => pickStage(s, m.id)} />
                             <ol className="flex flex-wrap gap-1.5">{m.milestones.map((s) => <li key={s.key} className={`rounded border px-2 py-1 ${s.at ? 'bg-card' : 'text-muted-foreground'}`}><span className="block">{s.label}</span><b>{s.at ? fmt(s.at) : 'not yet'}</b></li>)}</ol>

@@ -24,6 +24,7 @@ import { hasFullCandidateAccess, maskAudit } from '../utils/candidateAccess.js';
 import { loadHiringData } from '../utils/hiringMetrics.js';
 import { computeMrfMis } from '../utils/mrfMis.js';
 import { buildMrfMisWorkbook } from '../utils/mrfMisExport.js';
+import { buildRequisitionWorkbook, buildMonthWorkbook, monthRange, monthLabel } from '../utils/mrfFunnelReport.js';
 
 const T = 'JobRequisition', MT = 'MrfMaster';
 const HR = ['hr', 'admin'];
@@ -806,13 +807,34 @@ const H = {
   async mrf_mis_export({ p, cx, res }) {
     const out = await misFor(p, cx);
     if (!out) return fail(res, 'You do not have any requisitions to report on', 403);
-    const used = Object.entries(p.filters || {}).filter(([, v]) => v && v !== 'all').map(([k, v]) => `${k.replace(/_/g, ' ')}: ${Object.values(out.options).flat().find((o) => o?.value === v)?.label || v}`);
+    const used = filtersUsed(p.filters, out.options);
     const ExcelJS = (await import('exceljs')).default;
     const wb = await buildMrfMisWorkbook(out, ExcelJS, { subtitle: [used.length ? used.join(' · ') : 'All requisitions', out.org_wide ? '' : `your requisitions only (${cx.name})`].filter(Boolean).join(' · ') });
     const buffer = await wb.xlsx.writeBuffer();
-    return res.json({ success: true, base64: Buffer.from(buffer).toString('base64'), filename: `MRF_Recruitment_MIS_${out.today}.xlsx`, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    return res.json({ success: true, base64: Buffer.from(buffer).toString('base64'), filename: `MRF_Recruitment_MIS_${out.today}.xlsx`, mime: XLSX_MIME });
+  },
+  // Formatted matrix and funnel report: one requisition (requisition_id), or every requisition submitted in a month (month = YYYY-MM)
+  async mrf_funnel_report({ p, cx, res }) {
+    const range = p.requisition_id ? null : monthRange(p.month);
+    if (!p.requisition_id && !range) return fail(res, 'Choose a requisition or a month');
+    // the month replaces any date filter on screen; the other filters still narrow the month
+    const { fy, from, to, mrf_id, ...others } = p.filters || {};
+    const filters = range ? { ...others, ...range } : { mrf_id: p.requisition_id };
+    const out = await misFor({ filters }, cx);
+    if (!out) return fail(res, 'You do not have any requisitions to report on', 403);
+    const ExcelJS = (await import('exceljs')).default;
+    const by = [cx.name, out.org_wide ? '' : '(own requisitions only)'].filter(Boolean).join(' ');
+    const used = range ? filtersUsed(others, out.options) : [];
+    const wb = range ? buildMonthWorkbook(out, ExcelJS, { month: p.month, by, filtersText: used.length ? `Filtered by ${used.join(', ')}` : '' }) : buildRequisitionWorkbook(out, ExcelJS, { requisitionId: p.requisition_id, by });
+    if (!wb) return fail(res, range ? `No requisition was submitted in ${monthLabel(p.month)}${used.length ? ' for the chosen filters' : ''}` : 'Requisition not found', 404);
+    const buffer = await wb.xlsx.writeBuffer();
+    const tag = range ? monthLabel(p.month).replace(' ', '_') : String(out.mrfs[0].mrf_no || out.mrfs[0].designation || 'Requisition').replace(/[^\w-]+/g, '_');
+    return res.json({ success: true, base64: Buffer.from(buffer).toString('base64'), filename: `Recruitment_Funnel_${tag}.xlsx`, mime: XLSX_MIME });
   },
 };
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const filtersUsed = (filters, options) => Object.entries(filters || {}).filter(([, v]) => v && v !== 'all').map(([k, v]) => `${k.replace(/_/g, ' ')}: ${Object.values(options).flat().find((o) => o?.value === v)?.label || v}`);
 
 /** HR, admin, management and recruiters see everything; others only the requisitions they raised, manage or head. */
 async function misFor(p, cx) {
