@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { sendEmail } from '../utils/email.js';
 import * as LC from '../utils/hiringLifecycle.js';
+import { candidateAccess } from '../utils/candidateAccess.js';
 import { moveCandidate, loadCand, saveCand, logEvent, loadReq, reqTitle, reqKey, candName, esc, appUrl, nowIso, jparse, hasAny, fail, RECRUIT, READ, people, notifyUsers, loadConfig } from './hiring.js';
 import { cacheInvalidate } from './entities.js';
 
