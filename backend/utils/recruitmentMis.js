@@ -1,6 +1,7 @@
 // Recruitment MIS workbook: requisitions (manpower requisition workflow), applications, screening, interviews,
 // offers, joinings, sources and departments for a date range — all read from live data.
 import { all } from '../db.js';
+import { anonymousCandidate } from './candidateAccess.js';
 import { sheetWithTitle, table, section, label, fmtD } from './misReport.js';
 
 const IST_MS = 5.5 * 3600000;
@@ -18,7 +19,7 @@ const STAGES = Object.keys(ORDER);
 const reached = (c, stage) => stage === 'applied' || (ORDER[c.status] ?? -1) >= ORDER[stage] || (stage === 'offered' && !!c.offer_letter_date) || (stage === 'interviewed' && c._interviews.some(i => i.status === 'completed'));
 const reqKey = (c) => c.requisition_id || c.job_requisition_id || c.job_id || '';
 
-export async function collectRecruitmentMis({ from, to, department, requisition_id } = {}) {
+export async function collectRecruitmentMis({ from, to, department, requisition_id, maskNames = false } = {}) {
   const today = istDate();
   to = d10(to) || today; from = d10(from) || addDays(to, -29);
   const reqs = pj(await all("SELECT id, data, created_at FROM entities WHERE type='JobRequisition'"));
@@ -33,6 +34,7 @@ export async function collectRecruitmentMis({ from, to, department, requisition_
   const reqTitle = (c) => (reqById[reqKey(c)] ? title(reqById[reqKey(c)]) : '') || c.position_applied || c.position || '';
   const deptOk = (d) => !department || department === 'all' || d === department;
   cands = cands.filter(c => deptOk(dept(c)) && (!requisition_id || reqKey(c) === requisition_id));
+  if (maskNames) cands = cands.map(anonymousCandidate);
   const intsBy = {}; for (const i of interviews) (intsBy[i.candidate_id] = intsBy[i.candidate_id] || []).push(i);
   const scoreBy = {}; for (const s of scores) { const k = s.candidate_id; if (!scoreBy[k] || String(s.created_at || s._created) > String(scoreBy[k].created_at || scoreBy[k]._created)) scoreBy[k] = s; }
   for (const c of cands) {

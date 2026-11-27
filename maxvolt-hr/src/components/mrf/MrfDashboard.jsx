@@ -242,7 +242,7 @@ export default function MrfDashboard({ onOpen, refreshKey = 0 }) {
                   </button>
                   {openRule === b.rule && (
                     <div className="overflow-x-auto border-t"><table className="w-full text-xs"><thead><tr className="text-left text-muted-foreground border-b"><th className="p-2">Requisition</th><th>Position</th><th>Candidate</th><th>Waiting since</th><th>Days</th></tr></thead><tbody>
-                      {b.items.map((i, n) => <tr key={n} className="border-b"><td className="p-2">{byId.get(i.mrf_id)?.v2 ? <button type="button" className="font-mono text-primary underline" onClick={() => onOpen(i.mrf_id)}>{i.mrf_no}</button> : 'Older'}</td><td>{i.designation}</td><td>{i.candidate_id ? <Link className="text-primary underline" to={`/Recruitment?candidate=${i.candidate_id}`}>{i.name}</Link> : '—'}</td><td>{fmt(i.since)}</td><td className="font-medium text-red-600">{i.days}</td></tr>)}
+                      {b.items.map((i, n) => <tr key={n} className="border-b"><td className="p-2">{byId.get(i.mrf_id)?.v2 ? <button type="button" className="font-mono text-primary underline" onClick={() => onOpen(i.mrf_id)}>{i.mrf_no}</button> : 'Older'}</td><td>{i.designation}</td><td>{i.candidate_id ? <Link className="text-primary underline" to={`/Recruitment?candidate=${i.candidate_id}`}>{i.name}</Link> : i.name || '—'}</td><td>{fmt(i.since)}</td><td className="font-medium text-red-600">{i.days}</td></tr>)}
                     </tbody></table></div>
                   )}
                 </CardContent></Card>
@@ -286,6 +286,7 @@ export default function MrfDashboard({ onOpen, refreshKey = 0 }) {
           <DialogHeader><DialogTitle>{drill?.title}</DialogTitle></DialogHeader>
           {drill && (
             <div className="space-y-4 text-xs">
+              {drill.candidates && data?.candidates_hidden > 0 && <p className="rounded border bg-muted/40 p-2">Candidate records are shown only to HR, admin, recruiters and the requisition’s Hiring Manager. The counts include everyone.</p>}
               {drill.candidates && (
                 <div className="overflow-x-auto"><p className="font-semibold mb-1">Candidates ({drill.candidates.length})</p>
                   <table className="w-full"><thead><tr className="text-left text-muted-foreground border-b"><th className="py-1.5">Candidate</th><th>Requisition</th><th>Position</th><th>Current status</th><th>Applied</th><th>In status since</th></tr></thead><tbody>

@@ -5,16 +5,20 @@ import { one, all, run } from '../db.js';
 import { sendEmail } from '../utils/email.js';
 import { computeHiringMis, loadHiringData, METRIC_LABELS } from '../utils/hiringMetrics.js';
 import * as LC from '../utils/hiringLifecycle.js';
+import { hasFullCandidateAccess, anonymousCandidate, HIDDEN_NAME } from '../utils/candidateAccess.js';
 import { renderPdf } from '../utils/pdfRender.js';
 import { sheetWithTitle, table, section, fmtD } from '../utils/misReport.js';
 import HR_ from './hiring.js';
 import HI_ from './hiringInterviews.js';
 import { loadBatch, saveBatch, applyDecision, notifyDecision, notifyUsers, DECISIONS, esc, appUrl, jparse, hasAny, fail, candName, loadReq, reqTitle, READ, nowIso, loadConfig } from './hiring.js';
 
+/** Management sees the numbers; candidate names stay with HR, admin and recruiters. */
+const withoutNames = (D, cx) => (hasFullCandidateAccess(cx.roles) ? D : { ...D, cands: D.cands.map(anonymousCandidate), batches: D.batches.map((b) => ({ ...b, candidates: (b.candidates || []).map((x) => ({ ...x, name: HIDDEN_NAME })) })) });
+
 const MIS = {
   async rh_mis({ p, cx, res }) {
     if (!hasAny(cx, READ)) return fail(res, 'Not allowed', 403);
-    const D = await loadHiringData();
+    const D = withoutNames(await loadHiringData(), cx);
     const out = computeHiringMis(D, p.filters || {});
     // filter lists for the screen
     const opts = {
@@ -31,7 +35,7 @@ const MIS = {
 
   async rh_mis_export({ p, cx, res }) {
     if (!hasAny(cx, READ)) return fail(res, 'Not allowed', 403);
-    const D = await loadHiringData();
+    const D = withoutNames(await loadHiringData(), cx);
     const m = computeHiringMis(D, p.filters || {});
     const sub = `Generated ${fmtD(m.generated)} · calendar days (business days shown separately; weekly off: ${D.weeklyOff.length ? D.weeklyOff.map((d) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d]).join(', ') : 'none'}${D.useHolidays ? ' + company holidays' : ''})`;
     if (p.format === 'pdf') {

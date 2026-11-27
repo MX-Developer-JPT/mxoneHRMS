@@ -688,6 +688,7 @@ export default function Recruitment() {
   // Duplicate-application review — existing applications only; new
   // duplicate submissions are already blocked server-side
   // (submitJobApplication), this surfaces ones that slipped in before that.
+  const [limitedAccess, setLimitedAccess] = useState(false);
   const [dupDialogOpen, setDupDialogOpen] = useState(false);
   const [dupLoading, setDupLoading] = useState(false);
   const [dupGroups, setDupGroups] = useState([]);
@@ -727,6 +728,7 @@ export default function Recruitment() {
 
   const loadData = async () => {
     try {
+      base44.auth.me().then(u => setLimitedAccess(!!u && ![u.role, u.custom_role].some(r => ['hr', 'admin', 'recruiter'].includes(r)))).catch(() => {});
       const [allCandidates, allJds, allEmployees] = await Promise.all([
         base44.entities.Candidate.list('-created_date', 500),
         base44.entities.JobRequisition.list('-created_date', 200),
@@ -1029,6 +1031,7 @@ export default function Recruitment() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
+        {limitedAccess && <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">Candidate records are shown only to HR, admin, recruiters and the Hiring Manager of a requisition. You see the candidates of requisitions where you are the Hiring Manager; changes are made by HR or a recruiter.</p>}
         <div className="flex justify-between items-center flex-wrap gap-3">
           <div>
             <h1 className="text-3xl font-bold">Recruitment</h1>

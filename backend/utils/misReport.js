@@ -277,7 +277,7 @@ function writeRecruitment(wb, D, scopeLabel) {
     R.newRequisitions.map(r => [r.job_title || r.title || '', r.department || '', r.number_of_positions || '', label(r.status), fmtD(r._created)]), [34, 22, 12, 16, 14]);
   section(ws, 'New candidates in period');
   table(ws, ['Candidate', 'Position', 'Department', 'Stage', 'Source', 'Applied on'],
-    R.candidatesNew.map(c => [c.full_name || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.name || '', c.position || c.job_title || '', D.candDept(c), label(c.status), c.source || '', fmtD(c._created)]), [26, 28, 20, 18, 16, 14]);
+    R.candidatesNew.map(c => [D.maskNames ? 'Name hidden' : c.full_name || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.name || '', c.position || c.job_title || '', D.candDept(c), label(c.status), c.source || '', fmtD(c._created)]), [26, 28, 20, 18, 16, 14]);
 }
 
 function writeReimbursements(wb, D, scopeLabel) {
@@ -318,8 +318,8 @@ function writeDepartmentSummary(wb, D) {
     { total: (r) => ['TOTAL', ...Array.from({ length: 14 }, (_, i) => i === 6 ? Math.round(sum(r, x => x[8]) ? pct(sum(r, x => x[2]), sum(r, x => x[2] + x[3] + x[4] + x[5]) || 1) : 0) : sum(r, x => x[i + 1]))] });
 }
 
-export async function buildMisWorkbook({ period = 'daily', date, department = 'all', departmentWise = false }, ExcelJS) {
-  const D = await collectMis({ period, date, department });
+export async function buildMisWorkbook({ period = 'daily', date, department = 'all', departmentWise = false, maskNames = true }, ExcelJS) {
+  const D = { ...(await collectMis({ period, date, department })), maskNames };
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Maxvolt One';
   const scopeLabel = departmentWise ? 'All departments (department-wise)' : (D.department ? `Department: ${D.department}` : 'Entire company');

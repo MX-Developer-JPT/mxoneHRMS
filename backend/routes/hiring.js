@@ -11,6 +11,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { sendPushToUser } from '../utils/push.js';
 import { cacheInvalidate } from './entities.js';
 import * as LC from '../utils/hiringLifecycle.js';
+import { candidateAccess } from '../utils/candidateAccess.js';
 
 const RECRUIT = ['hr', 'admin', 'recruiter'];
 const READ = ['hr', 'admin', 'recruiter', 'management'];
@@ -276,8 +277,8 @@ const H = {
   },
 
   async rh_candidate_timeline({ p, cx, res }) {
-    if (!hasAny(cx, READ)) return fail(res, 'Not allowed', 403);
     const c = await loadCand(p.candidate_id); if (!c) return fail(res, 'Candidate not found', 404);
+    if (!(await candidateAccess(cx.cu.id)).can('Candidate', c)) return fail(res, 'You do not have access to this candidate', 403);
     const P = await people();
     const batches = (await batchesFor((b) => (b.candidates || []).some((x) => x.candidate_id === c.id))).map((b) => ({ ...publicBatch(b), mine: (b.candidates || []).find((x) => x.candidate_id === c.id) }));
     const interviews = (await all("SELECT id, data FROM entities WHERE type='Interview'")).map((r) => ({ ...jparse(r.data), id: r.id })).filter((i) => i.candidate_id === c.id)
@@ -371,8 +372,9 @@ const H = {
   },
 
   async rh_review_list({ p, cx, res }) {
-    if (!hasAny(cx, READ)) return fail(res, 'Not allowed', 403);
-    const list = await batchesFor((b) => (!p.requisition_id || b.requisition_id === p.requisition_id) && (!p.candidate_id || (b.candidates || []).some((x) => x.candidate_id === p.candidate_id)));
+    const access = await candidateAccess(cx.cu.id);
+    if (!access.all && !access.reqIds.size) return fail(res, 'Not allowed', 403);
+    const list = await batchesFor((b) => (access.all || access.reqIds.has(b.requisition_id)) && (!p.requisition_id || b.requisition_id === p.requisition_id) && (!p.candidate_id || (b.candidates || []).some((x) => x.candidate_id === p.candidate_id)));
     return res.json({ success: true, batches: list.reverse().map(publicBatch) });
   },
 

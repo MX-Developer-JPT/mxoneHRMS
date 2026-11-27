@@ -14,6 +14,8 @@ import { buildCriteria, scoreAgainst, scoreProfile, analyseResumeText, detectSki
 import { createHash } from 'crypto';
 import { extractResumeText } from '../utils/cvReader.js';
 import * as HLC from '../utils/hiringLifecycle.js';
+import { ensureManagerRole } from '../utils/managerRole.js';
+import { candidateAccess } from '../utils/candidateAccess.js';
 import { disableIfDue, reenableAccount } from '../utils/accountAccess.js';
 import { publicFence as geoPublicFence, isShaped as geoIsShaped, signedDistanceM as geoSignedDistanceM } from '../utils/geofenceShape.js';
 import { createRequire } from 'module';
@@ -1274,6 +1276,8 @@ const MGR_ROLES = ['hr', 'admin', 'management'];
 // Analytics (see Layout.jsx's recruiterMenuGroups), so every case backing
 // those pages needs 'recruiter' alongside the usual HR/admin/management set.
 const RECRUIT_ROLES = ['hr', 'admin', 'management', 'recruiter'];
+// anything that reads or changes a candidate's record (management is deliberately not included)
+const CANDIDATE_ROLES = ['hr', 'admin', 'recruiter'];
 
 // Is `targetUserId` a direct or indirect report of `managementUserId`? Walks
 // UP the reporting chain from the target until it either reaches
@@ -7742,6 +7746,8 @@ router.post('/:name', async (req, res) => {
       try { result = await mis.runAnalytics(base, cu, { restrictUids, fresh: !!p._t && name === 'getMisAnalytics' }); }
       catch (e) { console.error('[mis] analytics failed:', e); return res.json({ success: false, error: 'MIS data could not be retrieved: ' + e.message, retrievalFailed: true }); }
       if (name === 'getMisAnalytics') return res.json({ success: true, ...strip(result) });
+      // the list of new candidates names people: only HR / admin / recruiters get the names
+      if (result._registers?.new_candidates && !(await hasRole(cu, CANDIDATE_ROLES))) result = { ...result, _registers: { ...result._registers, new_candidates: result._registers.new_candidates.map((c) => ({ ...c, name: 'Name hidden' })) } };
       if (name === 'getMisRegister') {
         const MGR_ONLY = ['vacancies', 'visitors', 'reimbursements', 'reimbursement_issues', 'visitor_issues', 'data_quality', 'joiners', 'exits'];
         if (teamAccess && MGR_ONLY.includes(p.kind)) return res.status(403).json({ error: 'Not available for your role' });
@@ -7779,13 +7785,14 @@ router.post('/:name', async (req, res) => {
         try {
           rr = await misA.runAnalytics({ preset: misPeriod, anchor: misDate, compare: 'previous', filters: (!misDeptWise && misDept && misDept !== 'all') ? { department: misDept } : {} }, cu, { fresh: true });
         } catch (e) { console.error('[mis] export analytics failed:', e); return res.json({ success: false, error: 'MIS data could not be retrieved: ' + e.message }); }
+        if (rr._registers?.new_candidates && !(await hasRole(cu, CANDIDATE_ROLES))) rr = { ...rr, _registers: { ...rr._registers, new_candidates: rr._registers.new_candidates.map((c) => ({ ...c, name: 'Name hidden' })) } };
         const wbI = await misE.buildMisIntelligenceWorkbook(misA.stripPrivate(rr), rr._registers, (await import('exceljs')).default, { departmentWise: !!misDeptWise });
         console.log(`[audit] MIS export (${misPeriod}${misDeptWise ? ', department-wise' : ''}) by ${cu.id} for ${rr.meta.period.from}..${rr.meta.period.to}`);
         return res.json({ success: true, base64: Buffer.from(wbI.buffer).toString('base64'), filename: wbI.filename, title: `${misPeriod[0].toUpperCase() + misPeriod.slice(1)} MIS — ${rr.meta.period.label}`, counts: { employees: rr.meta.employeesInScope, insights: rr.insights.length, exceptions: rr.attendance.exceptionCount } });
       }
       const { buildMisWorkbook } = await import('../utils/misReport.js');
       const ExcelJSmis = (await import('exceljs')).default;
-      const mis = await buildMisWorkbook({ period: misPeriod, date: misDate, department: misDept, departmentWise: !!misDeptWise }, ExcelJSmis);
+      const mis = await buildMisWorkbook({ period: misPeriod, date: misDate, department: misDept, departmentWise: !!misDeptWise, maskNames: !(await hasRole(cu, CANDIDATE_ROLES)) }, ExcelJSmis);
       return res.json({ success: true, base64: Buffer.from(mis.buffer).toString('base64'), filename: mis.filename, title: mis.range.title, counts: mis.counts });
     }
 
@@ -9666,7 +9673,7 @@ router.post('/:name', async (req, res) => {
       // Finds every user who is set as an Employee's reporting_manager_id
       // (or, for older records that predate that field, the legacy
       // reporting_manager_email) and promotes them from 'employee'/
-      // 'onboarding_pending' to 'management' so they can actually reach the
+      // 'onboarding_pending' to 'manager' so they can actually reach the
       // Leave/Regularisation/Expense/GatePass approval screens for that
       // report — those pages are gated on role, not on reporting_manager_id
       // alone.
@@ -9701,14 +9708,11 @@ router.post('/:name', async (req, res) => {
       for (const mgrId of mgrIds) {
         const u = await one('SELECT id, role, custom_role FROM users WHERE id=$1', [mgrId]);
         if (!u) { notFound++; continue; }
-        const effRole = u.custom_role || u.role;
-        if (['admin','hr','manager','management'].includes(effRole)) { already++; continue; }
-        await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [u.id]);
-        promoted++;
+        if (await ensureManagerRole(u.id, { one, run })) promoted++; else already++;
       }
       return res.json({
         success: true,
-        message: `${promoted} manager(s) promoted to management role. ${already} already at management/higher. ${notFound} not found in users.`,
+        message: `${promoted} reporting manager(s) given the manager role. ${already} already had a manager or other role. ${notFound} not found in users.`,
         promoted, already, not_found: notFound, total_managers: mgrIds.size,
       });
     }
@@ -12458,7 +12462,7 @@ router.post('/:name', async (req, res) => {
       // ResumeParsePanel — gated on THEIR own consent, since they're the
       // one choosing to send this resume to Groq.
       if (!auto_triggered) {
-        if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+        if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
         if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       }
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -12473,7 +12477,7 @@ router.post('/:name', async (req, res) => {
     // scoreCandidate); otherwise it scores the strength and completeness of the CV for the role they named. Numbers are computed, the AI only
     // writes the note.
     case 'scoreAndSummariseCv': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
       const aiOk = await requireAiConsent(cu);
       const { candidate_id } = p;
       const cRow = candidate_id ? await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]) : null;
@@ -12511,7 +12515,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'scoreCandidate': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
       const r = await screenCandidate({ candidate_id: p.candidate_id, job_requisition_id: p.job_requisition_id, aiOk: await requireAiConsent(cu), actorId: cu?.id });
       if (r.error) return res.json({ success: false, error: r.error });
       return res.json({ success: true, data: r.data });
@@ -12519,7 +12523,7 @@ router.post('/:name', async (req, res) => {
 
     // Reads and scores EVERY candidate who applied for a requisition (parsing any CV not yet read), in one go.
     case 'scoreAllCandidates': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'Recruiter/HR access required' });
       const { job_requisition_id: sacJob } = p;
       const jdRow = sacJob ? await one("SELECT data FROM entities WHERE type='JobRequisition' AND id=$1", [sacJob]) : null;
       if (!jdRow) return res.json({ success: false, error: 'Choose a requisition first' });
@@ -12538,6 +12542,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Candidate reminders ─────────────────────────── */
     case 'setCandidateReminder': {
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id, remind_at, note } = p;
       if (!candidate_id || !remind_at) return res.json({ success: false, error: 'candidate_id and remind_at are required' });
       const remId = uuidv4();
@@ -12549,11 +12554,13 @@ router.post('/:name', async (req, res) => {
     case 'getCandidateReminders': {
       const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
+      if (!cu || !(await candidateAccess(cu.id)).can('CandidateReminder', { candidate_id })) return res.status(403).json({ error: 'You do not have access to this candidate' });
       const rows = await all("SELECT data FROM entities WHERE type='CandidateReminder' AND data::jsonb->>'candidate_id'=$1 ORDER BY created_at DESC", [candidate_id]);
       return res.json({ success: true, reminders: rows.map(r => JSON.parse(r.data)) });
     }
 
     case 'cancelCandidateReminder': {
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { reminder_id } = p;
       if (!reminder_id) return res.json({ success: false, error: 'reminder_id required' });
       const remRow = await one("SELECT data FROM entities WHERE id=$1 AND type='CandidateReminder'", [reminder_id]);
@@ -12577,7 +12584,7 @@ router.post('/:name', async (req, res) => {
        gated public cases, same pattern as offer_accept_token below) ───── */
 
     case 'sendCandidateDocRequest': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
       const cRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -12693,7 +12700,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'getCandidateDocStatusList': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const rows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'doc_collection_token' IS NOT NULL");
       const list = rows.map(r => {
         const c = JSON.parse(r.data);
@@ -12708,7 +12715,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'verifyCandidateDocument': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id, doc_key, action, reason } = p; // action: 'verified' | 'rejected'
       if (!candidate_id || !doc_key || !['verified', 'rejected'].includes(action)) {
         return res.json({ success: false, error: 'candidate_id, doc_key, and a valid action are required' });
@@ -12755,7 +12762,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'previewOfferLetterPdf': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -12771,7 +12778,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── Send Offer Letter (email to candidate) ─────── */
     case 'sendOfferLetter': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id, joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes, medical_contribution = 0, salary_overrides } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
 
@@ -13071,7 +13078,7 @@ router.post('/:name', async (req, res) => {
 
     /* ── HR: fetch the signed consent PDF for a candidate ───── */
     case 'getCandidateConsentPdf': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
       const row = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
@@ -13104,7 +13111,7 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'inviteJoinerToApp': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
       if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
@@ -14018,7 +14025,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
     }
 
     case 'sendInterviewEmail': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       // Accept either direct fields or candidate_id (from InterviewManagement.jsx)
       let candidateEmail = p.candidate_email;
       let candidateName  = p.candidate_name || 'Candidate';
@@ -14229,7 +14236,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
     // returns groups with more than one application so HR can review and
     // clean them up (reject the extras, keep the right one).
     case 'findDuplicateApplications': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const jobFilter = p?.job_id || null;
       const sql = jobFilter
         ? "SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'job_id'=$1"
@@ -14849,11 +14856,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
       // file's autoPromoteReportingManager for the full history).
       if (employeeData.reporting_manager_id) {
         try {
-          const mgrRow = await one('SELECT role, custom_role FROM users WHERE id=$1', [employeeData.reporting_manager_id]);
-          const mgrRole = mgrRow?.custom_role || mgrRow?.role;
-          if (mgrRow && !['admin', 'hr', 'manager', 'management'].includes(mgrRole)) {
-            await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [employeeData.reporting_manager_id]);
-          }
+          await ensureManagerRole(employeeData.reporting_manager_id, { one, run });
         } catch (e) { console.error('[approveUserOnboarding] manager auto-promote failed:', e.message); }
       }
 
@@ -20423,7 +20426,7 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
       const rmStart = String(p.from || '').slice(0, 10) || new Date(new Date(rmEnd + 'T00:00:00Z').getTime() - 29 * 86400000).toISOString().slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(rmStart) || !/^\d{4}-\d{2}-\d{2}$/.test(rmEnd) || rmStart > rmEnd) return res.json({ success: false, error: 'Choose a valid date range' });
       const { buildRecruitmentMisWorkbook } = await import('../utils/recruitmentMis.js');
-      const rmx = await buildRecruitmentMisWorkbook({ from: rmStart, to: rmEnd, department: p.department, requisition_id: p.requisition_id }, (await import('exceljs')).default);
+      const rmx = await buildRecruitmentMisWorkbook({ from: rmStart, to: rmEnd, department: p.department, requisition_id: p.requisition_id, maskNames: !(await hasRole(cu, CANDIDATE_ROLES)) }, (await import('exceljs')).default);
       console.log(`[audit] Recruitment MIS export by ${cu.id} for ${rmStart}..${rmEnd}`);
       return res.json({ success: true, base64: Buffer.from(rmx.buffer).toString('base64'), filename: rmx.filename, counts: rmx.counts, title: `Recruitment MIS ${rmStart} to ${rmEnd}` });
     }
@@ -20604,7 +20607,7 @@ Reply as JSON: { "sentiment": "positive|neutral|negative", "themes": ["theme1","
     }
 
     case 'getRecruitmentInsights': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       if (!(await requireAiConsent(cu))) return res.status(403).json(AI_CONSENT_ERROR);
       // Takes the same summary data the client already fetched from
       // getRecruitmentMIS and asks the AI to write short, specific,
@@ -20640,7 +20643,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'saveInterviewScorecard': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id: sisCandId, scorecard: sisCard } = p;
       if (!sisCandId) return res.json({ success: false, error: 'candidate_id required' });
       const sisCandRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [sisCandId]);
@@ -20671,7 +20674,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     }
 
     case 'rejectCandidate': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id: rcId, reason: rcReason, notes: rcNotes, notify_candidate: rcNotify = true } = p;
       if (!rcId) return res.json({ success: false, error: 'candidate_id required' });
       const rcRow = await one("SELECT id,data FROM entities WHERE type='Candidate' AND id=$1", [rcId]);
@@ -20684,7 +20687,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     // used by the multi-select bulk action bar so HR doesn't have to open
     // and reject 30 job-portal applicants for a closed role one at a time.
     case 'bulkRejectCandidates': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_ids: brcIds, reason: brcReason, notes: brcNotes, notify_candidates: brcNotify = true } = p;
       if (!Array.isArray(brcIds) || !brcIds.length) return res.json({ success: false, error: 'candidate_ids required' });
       const brcRows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND id = ANY($1)", [brcIds]);
@@ -20700,7 +20703,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     // (unlike bulk reject) — a stage move is an internal pipeline action,
     // not something every stage change should notify the candidate about.
     case 'bulkUpdateCandidateStatus': {
-      if (!(await hasRole(cu, RECRUIT_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
+      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_ids: bucIds, status: bucStatus } = p;
       if (!Array.isArray(bucIds) || !bucIds.length) return res.json({ success: false, error: 'candidate_ids required' });
       if (!bucStatus) return res.json({ success: false, error: 'status required' });

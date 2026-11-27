@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { assetProblem, cleanSpecs } from '../utils/assetSpecs.js';
+import { ensureManagerRole } from '../utils/managerRole.js';
+import { CANDIDATE_TYPES, candidateAccess, hasFullCandidateAccess, maskAudit } from '../utils/candidateAccess.js';
 import { auditAssetChange } from '../utils/assetAudit.js';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
@@ -166,19 +168,13 @@ async function getDirectReportUserIds(managerId) {
 // so no separate admin step is ever required again. Never demotes or
 // touches anyone already at manager-or-higher.
 async function autoPromoteReportingManager(managerId) {
-  if (!managerId) return;
-  try {
-    const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [managerId]);
-    if (!u) return;
-    const role = u.custom_role || u.role;
-    if (['admin', 'hr', 'manager', 'management'].includes(role)) return;
-    await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [managerId]);
-  } catch (e) { console.error('[entities] autoPromoteReportingManager failed:', e.message); }
+  try { await ensureManagerRole(managerId); } catch (e) { console.error('[entities] autoPromoteReportingManager failed:', e.message); }
 }
 
 // New-style manpower requisitions (mrf_version 2) carry CTC, notes and an audit trail: only HR / admin / management / recruiters, the
 // person who raised it and its Hiring Manager may read them. Older requisitions are unchanged.
 async function filterMrfRows(data, cu, type) {
+  if (CANDIDATE_TYPES.has(type)) { const access = await candidateAccess(cu.id); return access.all ? data : data.filter(d => access.can(type, d)); }
   if (type !== 'JobRequisition' && type !== 'MrfRulesConfig') return data;
   const role = await getEffectiveRole(cu);
   let roles = [role];
@@ -186,7 +182,9 @@ async function filterMrfRows(data, cu, type) {
   const isHr = roles.some(r => ['hr', 'admin'].includes(r));
   if (type === 'MrfRulesConfig') return isHr ? data : [];      // pay bands are HR's configuration
   // validation flags that describe other people's salaries are for HR / admin only
-  const trim = d => {
+  const namesAllowed = d => hasFullCandidateAccess(roles) || d.hiring_manager_id === cu.id;
+  const trim = row => {
+    const d = row.audit && !namesAllowed(row) ? { ...row, audit: maskAudit(row.audit) } : row;
     if (isHr || d.mrf_version !== 2 || (!d.validation && !d.flag_overrides)) return d;
     const hidden = code => code === 'pay_history';
     return { ...d,
@@ -254,6 +252,11 @@ async function canAccessSensitive(cu, type, ownerUserId) {
 // managing these for up to 30 days, the same staleness bug fixed everywhere
 // else in this file's authorization pass.
 async function requireAdminForType(cu, res, type) {
+  if (CANDIDATE_TYPES.has(type)) {
+    const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]);
+    if (!hasFullCandidateAccess([u?.role, u?.custom_role])) { res.status(403).json({ error: 'Only HR, admin or recruiters can change candidate records' }); return false; }
+    return true;
+  }
   // requisition dropdown lists and validation rules are changed only from their own screen (which checks the role and keeps history)
   if (type === 'MrfMaster' || type === 'MrfRulesConfig') { res.status(403).json({ error: 'Change this from the Manpower Requisition configuration screen' }); return false; }
   if (type === 'AppLocation') {
@@ -932,7 +935,7 @@ router.get('/:type/:id', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Not found' });
   const data = parseRow(row);
   if (!(await canAccessSensitive(cu, type, data.user_id))) return res.status(403).json({ error: 'Access denied' });
-  if (type === 'MrfRulesConfig' || (type === 'JobRequisition' && data.mrf_version === 2)) {
+  if (type === 'MrfRulesConfig' || CANDIDATE_TYPES.has(type) || (type === 'JobRequisition' && data.mrf_version === 2)) {
     const [visible] = await filterMrfRows([data], cu, type);
     if (!visible) return res.status(403).json({ error: 'Access denied' });
     return res.json(visible);

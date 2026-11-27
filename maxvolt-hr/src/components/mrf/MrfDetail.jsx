@@ -139,7 +139,7 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
                 <span>{pipeline.total} candidate{pipeline.total === 1 ? '' : 's'}</span>
                 {pipeline.by_stage.map((x) => <span key={x.stage} className="text-xs rounded-full bg-muted px-2 py-0.5">{x.stage.replace(/_/g, ' ')} {x.count}</span>)}
                 <span className="text-xs text-muted-foreground">{pipeline.filled} of {pipeline.positions} positions filled</span>
-                <a className="ml-auto text-primary underline text-xs" href={`/Recruitment?requisition=${rec.id}`}>View candidates →</a>
+                {p.sees_candidates && <a className="ml-auto text-primary underline text-xs" href={`/Recruitment?requisition=${rec.id}`}>View candidates →</a>}
               </div>
             )}
 

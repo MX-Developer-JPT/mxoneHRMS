@@ -66,10 +66,11 @@ async function notifyPanel(P, i, c, req, kind, cfg, by) {
 
 const H = {
   async rh_interview_options({ cx, res }) {
-    if (!hasAny(cx, READ)) return fail(res, 'Not allowed', 403);
+    const access = await candidateAccess(cx.cu.id);
+    if (!access.all && !access.reqIds.size) return fail(res, 'Not allowed', 403);
     const cfg = await loadConfig();
     const cands = (await all("SELECT id, data FROM entities WHERE type='Candidate'")).map((r) => ({ ...jparse(r.data), id: r.id }));
-    const awaiting = cands.filter((c) => ELIGIBLE.includes(c.status) || (!reqKey(c) && LEGACY_ELIGIBLE.includes(c.status || 'applied')));
+    const awaiting = cands.filter((c) => access.can('Candidate', c) && (ELIGIBLE.includes(c.status) || (!reqKey(c) && LEGACY_ELIGIBLE.includes(c.status || 'applied'))));
     const ivs = await allInterviews();
     const reqNo = Object.fromEntries((await all("SELECT id, data FROM entities WHERE type='JobRequisition'")).map((r) => [r.id, jparse(r.data)?.requisition_id || '']));
     const rows = awaiting.map((c) => ({ id: c.id, mrf_no: reqNo[reqKey(c)] || '', name: candName(c), status: c.status || 'applied', status_label: LC.statusLabel(c.status), position: c.position_applied || '', requisition_id: reqKey(c), department: c.department || '', email: c.email || '', rounds_done: ivs.filter((i) => i.candidate_id === c.id && i.status === 'completed').length }));
@@ -77,10 +78,14 @@ const H = {
   },
 
   async rh_interview_list({ p, cx, res }) {
-    if (!hasAny(cx, READ) && !hasAny(cx, ['manager', 'employee'])) return fail(res, 'Not allowed', 403);
-    const mineOnly = !hasAny(cx, READ);                                           // an interviewer who is not HR sees only their own interviews
+    const access = await candidateAccess(cx.cu.id);
     let list = await enrich(await allInterviews());
-    if (mineOnly) list = list.filter((i) => (i.interviewer_ids || []).includes(cx.cu.id));
+    if (!access.all) {
+      // a Hiring Manager sees the interviews of their requisitions; an interviewer sees what they need to give feedback — no contact
+      // details and nobody else's feedback
+      list = list.filter((i) => access.can('Interview', i) || (i.interviewer_ids || []).includes(cx.cu.id))
+        .map((i) => (access.can('Interview', i) ? i : { ...i, candidate_email: '', candidate_phone: '', feedbacks: (i.feedbacks || []).filter((x) => x.interviewer_id === cx.cu.id) }));
+    }
     const stats = (arr, cands) => ({
       awaiting: cands, scheduled: arr.filter((i) => i.status === 'scheduled').length, completed: arr.filter((i) => i.status === 'completed').length,
       rescheduled: arr.filter((i) => (i.reschedule_count || 0) > 0).length, cancelled: arr.filter((i) => i.status === 'cancelled').length,
@@ -91,7 +96,7 @@ const H = {
       && (!p.candidate_id || i.candidate_id === p.candidate_id) && (!p.round_key || i.round_key === p.round_key) && (!p.from || String(i.scheduled_date).slice(0, 10) >= p.from) && (!p.to || String(i.scheduled_date).slice(0, 10) <= p.to);
     const filtered = list.filter(f);
     const cands = (await all("SELECT data FROM entities WHERE type='Candidate'")).map((r) => jparse(r.data)).filter(Boolean);
-    const awaitingN = cands.filter((c) => (ELIGIBLE.includes(c.status) || (!reqKey(c) && LEGACY_ELIGIBLE.includes(c.status || 'applied'))) && (!p.requisition_id || reqKey(c) === p.requisition_id) && (!p.department || p.department === 'all' || c.department === p.department)).length;
+    const awaitingN = cands.filter((c) => access.can('Candidate', c) && (ELIGIBLE.includes(c.status) || (!reqKey(c) && LEGACY_ELIGIBLE.includes(c.status || 'applied'))) && (!p.requisition_id || reqKey(c) === p.requisition_id) && (!p.department || p.department === 'all' || c.department === p.department)).length;
     const shown = p.status && p.status !== 'all' ? filtered.filter((i) => (p.status === 'pending_feedback' ? i.feedback_pending : p.status === 'rescheduled' ? (i.reschedule_count || 0) > 0 : i.status === p.status)) : filtered;
     return res.json({ success: true, stats: stats(filtered, awaitingN), interviews: shown.sort((a, b) => String(b.scheduled_date).localeCompare(String(a.scheduled_date))) });
   },

@@ -121,6 +121,7 @@ export async function sendMisReport(period, { force = false, toOverride } = {}) 
   const recipients = toOverride ? [toOverride] : (await resolveRecipients(cfg)).map(r => r.email);
   if (!recipients.length) { console.warn(`[mis-mail] ${period}: no recipients configured`); return { skipped: 'no recipients', key }; }
 
+  if (res._registers?.new_candidates) res._registers = { ...res._registers, new_candidates: res._registers.new_candidates.map((c) => ({ ...c, name: 'Name hidden' })) };
   const slim = stripPrivate(res);
   const full = await buildMisIntelligenceWorkbook(slim, res._registers, ExcelJS, {});
   const dw = await buildMisIntelligenceWorkbook(slim, res._registers, ExcelJS, { departmentWise: true });

@@ -20,6 +20,7 @@ import { sendPushToUser } from '../utils/push.js';
 import * as M from '../utils/mrf.js';
 import * as VR from '../utils/mrfRules.js';
 import { keyedLock } from '../utils/keyedLock.js';
+import { hasFullCandidateAccess, maskAudit } from '../utils/candidateAccess.js';
 import { loadHiringData } from '../utils/hiringMetrics.js';
 import { computeMrfMis } from '../utils/mrfMis.js';
 import { buildMrfMisWorkbook } from '../utils/mrfMisExport.js';
@@ -207,6 +208,7 @@ function hydrate(rec, P) {
 /** hydrate(), minus what this viewer may not see (flags that describe other people's salaries). */
 function view(rec, P, cx) {
   const out = hydrate(rec, P);
+  if (out.audit && !hasFullCandidateAccess(cx.roles) && !isHm(rec, cx)) out.audit = maskAudit(out.audit);
   if (hasAny(cx, HR)) return out;
   if (out.validation) out.validation = { ...out.validation, flags: forViewer(out.validation.flags, cx) };
   if (out.flag_overrides) out.flag_overrides = Object.fromEntries(Object.entries(out.flag_overrides).filter(([, o]) => !VR.RULES[o.code]?.sensitive));
@@ -789,6 +791,7 @@ const H = {
       can_decide: isHm(rec, cx) && rec.status === 'pending_hm_approval',
       can_reassign_hm: hasAny(cx, ['hr', 'admin', 'management']) && ['draft', 'changes_requested', 'pending_hm_approval'].includes(rec.status),
       can_override: VR.canOverride(cx.roles, rules),
+      sees_candidates: hasFullCandidateAccess(cx.roles) || isHm(rec, cx),
       can_dh_decide: rec.status === 'pending_hr_publication' && rec.dh_approval?.status === 'pending' && (head ? head === cx.cu.id : hasAny(cx, ['admin'])),
     };
     return res.json({ success: true, requisition: out });
@@ -819,7 +822,8 @@ async function misFor(p, cx) {
   if (!orgWide && !cx.headOf.size && !D.reqs.some((r) => r.requested_by === cx.cu.id || r.hiring_manager_id === cx.cu.id)) return null;
   const users = await all("SELECT id, full_name, email FROM users");
   const config = await loadRulesConfig();
-  const out = computeMrfMis(D, { filters: p.filters || {}, scope, sla: config.sla, masters: await loadMasters(true), userNames: Object.fromEntries(users.map((u) => [u.id, u.full_name || u.email])) });
+  const candidatesVisible = hasFullCandidateAccess(cx.roles) ? () => true : (r) => r.hiring_manager_id === cx.cu.id;
+  const out = computeMrfMis(D, { filters: p.filters || {}, scope, candidatesVisible, sla: config.sla, masters: await loadMasters(true), userNames: Object.fromEntries(users.map((u) => [u.id, u.full_name || u.email])) });
   return { ...out, org_wide: orgWide };
 }
 
@@ -901,7 +905,15 @@ async function countJoined(rid, c, byUserId) {
   const closing = rec.positions_filled >= vacancies && ['published', 'on_hold', 'pending_hr_publication'].includes(rec.status);
   if (closing) { rec.status = 'closed'; rec.closed_reason = 'filled'; rec.closed_at = nowIso(); rec.is_published = false; addAudit(rec, sys, 'status_filled', 'All vacancies filled — requisition closed'); }
   await save(rec, byUserId);
-  await notify([rec.requested_by, rec.hiring_manager_id, ...(closing ? await hrAudience() : [])], { title: closing ? 'Requisition filled' : 'A position was filled', message: `${c.full_name || 'A candidate'} joined for ${label(rec)} (${rec.positions_filled}/${vacancies}).${closing ? ' All vacancies are filled and the job is closed.' : ''}`, type: 'success', email: closing });
+  // the name goes only to those who may see candidate records; a requester who is neither gets the fact without it
+  const tail = ` joined for ${label(rec)} (${rec.positions_filled}/${vacancies}).${closing ? ' All vacancies are filled and the job is closed.' : ''}`;
+  const named = [rec.hiring_manager_id, ...(closing ? await hrAudience() : [])];
+  const others = [rec.requested_by].filter((id) => id && !named.includes(id));
+  const requester = others.length ? await one('SELECT role, custom_role FROM users WHERE id=$1', [others[0]]) : null;
+  if (requester && hasFullCandidateAccess(roleList(requester))) named.push(...others.splice(0));
+  const title = closing ? 'Requisition filled' : 'A position was filled';
+  await notify(named, { title, message: `${c.full_name || 'A candidate'}${tail}`, type: 'success', email: closing });
+  await notify(others, { title, message: `A candidate${tail}`, type: 'success', email: closing });
   return { filled: rec.positions_filled, vacancies, closed: closing };
 }
 export const _test = { H, applyJd };

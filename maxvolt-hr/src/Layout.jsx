@@ -140,10 +140,7 @@ const managementMenuGroups = [
   { label: 'Recruitment', items: [
     { name: 'Manpower Requisition (MRF)', icon: Briefcase, page: 'ManpowerRequisitions' },
     { name: 'Job Requisitions',         icon: Briefcase,       page: 'JobRequisitions' },
-    { name: 'Candidates',               icon: UserPlus,        page: 'Recruitment' },
-    { name: 'Add Candidates',          icon: UserPlus,        page: 'CandidateIntake' },
     { name: 'Interviews',               icon: Calendar,        page: 'InterviewManagement' },
-    { name: 'Offer Letters',            icon: FileSignature,   page: 'OfferLetters' },
   ]},
   { label: 'My Attendance', items: [
     { name: 'Mark Attendance',          icon: Clock,           page: 'MarkAttendance' },

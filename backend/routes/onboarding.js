@@ -428,8 +428,7 @@ const HANDLERS = {
     // A reporting manager must be able to reach the approval screens for their new team member.
     if (updated.reporting_manager_id) {
       try {
-        const m = await one('SELECT role, custom_role FROM users WHERE id=$1', [updated.reporting_manager_id]);
-        if (m && !['admin', 'hr', 'manager', 'management'].includes(m.custom_role || m.role)) await run("UPDATE users SET role='management', custom_role='management', updated_at=NOW()::TEXT WHERE id=$1", [updated.reporting_manager_id]);
+        await (await import('../utils/managerRole.js')).ensureManagerRole(updated.reporting_manager_id, { one, run });
       } catch (e) { console.warn('[onboarding] manager promote failed:', e.message); }
     }
     try { const { startForUser } = await import('./ld.js'); await startForUser(cu.id); } catch (e) { console.warn('[onboarding] L&D start failed:', e.message); }

@@ -4,6 +4,7 @@
 // Counting rule: a candidate counts in every stage up to the furthest one they reached (so the funnel only narrows). Time spent
 // in a stage is measured only where both ends have a recorded timestamp.
 import * as LC from './hiringLifecycle.js';
+import { maskAudit, HIDDEN_NAME } from './candidateAccess.js';
 import { DEFAULT_SLA, SLA_LABELS, daysBetween, experienceText, annualCtc, lakhs } from './mrfRules.js';
 
 export const CANDIDATE_STAGES = [
@@ -360,10 +361,14 @@ export function computeMrfMis(D, opts = {}) {
   const scope = opts.scope || { all: true };
   const visible = D.reqs.filter((r) => scope.all || r.requested_by === scope.user_id || r.hiring_manager_id === scope.user_id || ((scope.departments || []).includes(r.department) && r.status !== 'draft'));
   const allRows = visible.map((r) => buildMrf(r, ctx));
+  const rawById = new Map(visible.map((r) => [r.id, r]));
+  const seesPeople = (m) => !opts.candidatesVisible || opts.candidatesVisible(rawById.get(m.id));
   const rows = allRows.filter((m) => matchesFilters(m, f)).sort((a, b) => String(b.submission_date || b.created_date).localeCompare(String(a.submission_date || a.created_date)) || String(b.mrf_no).localeCompare(String(a.mrf_no)));
 
   const journeys = rows.flatMap((m) => m._journeys);
-  const breaches = rows.flatMap((m) => m.breaches);
+  const allowed = new Set(rows.filter(seesPeople).map((m) => m.id));
+  const hidden = ({ candidate_id, name, ...rest }) => ({ ...rest, name: candidate_id ? HIDDEN_NAME : name });
+  const breaches = rows.flatMap((m) => (allowed.has(m.id) ? m.breaches : m.breaches.map(hidden)));
   const bottlenecks = Object.keys(SLA_LABELS).filter((k) => k !== 'approaching_days').map((rule) => {
     const items = breaches.filter((b) => b.rule === rule).sort((a, b) => b.days - a.days);
     return { rule, label: SLA_LABELS[rule], limit: sla[rule], count: items.length, items };
@@ -377,7 +382,8 @@ export function computeMrfMis(D, opts = {}) {
 
   const reqIds = new Set(D.reqs.map((r) => r.id));
   const unlinked = scope.all ? D.cands.filter((c) => !reqIds.has(reqKey(c))) : [];
-  const dupes = rows.flatMap((m) => m._dupes.map((d) => ({ ...d, mrf_id: m.id, mrf_no: m.mrf_no })));
+  const everyone = !opts.candidatesVisible || opts.candidatesVisible({});
+  const dupes = rows.flatMap((m) => m._dupes.map((d) => ({ ...d, ...(allowed.has(m.id) ? {} : { id: '', same_as: '', name: HIDDEN_NAME }), mrf_id: m.id, mrf_no: m.mrf_no })));
 
   return {
     generated_at: new Date(now).toISOString(), today, sla,
@@ -391,9 +397,10 @@ export function computeMrfMis(D, opts = {}) {
       target_vs_actual_days: (() => { const v = rows.filter((m) => ['completed_on_time', 'completed_late'].includes(m.sla_status) && m.target_date && m.closed_date).map((m) => daysBetween(m.target_date, m.closed_date)); return v.length ? round1(sum(v) / v.length) : null; })(),
     },
     comparisons: comparisons(rows, allRows, f),
-    mrfs: rows.map(({ _journeys, _dupes, times, ...m }) => m),
-    candidates: rows.flatMap((m) => m._journeys.map((j) => ({ id: j.id, name: j.name, mrf_id: m.id, mrf_no: m.mrf_no, designation: m.designation, status: j.status, status_label: j.status_label, reached: j.reached, active: j.active, joined: j.joined, applied: istDay(j.applied), since: istDay(j.since) }))),
-    data_quality: { unlinked_candidates: unlinked.map((c) => ({ id: c.id, name: candName(c), status: c.status || 'applied', applied: istDay(c.applied_date || c._created) })).slice(0, 500), unlinked_count: unlinked.length, duplicates: dupes },
+    mrfs: rows.map(({ _journeys, _dupes, times, ...m }) => (allowed.has(m.id) ? m : { ...m, breaches: m.breaches.map(hidden), history: maskAudit(m.history) })),
+    candidates_hidden: rows.filter((m) => !allowed.has(m.id)).reduce((s, m) => s + m._journeys.length, 0),
+    candidates: rows.filter((m) => allowed.has(m.id)).flatMap((m) => m._journeys.map((j) => ({ id: j.id, name: j.name, mrf_id: m.id, mrf_no: m.mrf_no, designation: m.designation, status: j.status, status_label: j.status_label, reached: j.reached, active: j.active, joined: j.joined, applied: istDay(j.applied), since: istDay(j.since) }))),
+    data_quality: { unlinked_candidates: (everyone ? unlinked : []).map((c) => ({ id: c.id, name: candName(c), status: c.status || 'applied', applied: istDay(c.applied_date || c._created) })).slice(0, 500), unlinked_count: unlinked.length, duplicates: dupes },
     options: {
       financial_years: [...new Set(allRows.map((m) => financialYear(m.submission_date || m.created_date)).filter(Boolean))].sort().reverse(),
       departments: distinct((m) => m.department, (m) => m.department), designations: distinct((m) => m.designation, (m) => m.designation), tiers: distinct((m) => m.tier, (m) => m.tier_label),
