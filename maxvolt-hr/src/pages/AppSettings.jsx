@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { pushSupported, getPushState, enablePush, disablePush } from '@/utils/pwa';
 import { registerNativePush } from '@/lib/nativePush';
+import AndroidUpdateCard from '@/components/admin/AndroidUpdateCard';
 
 export default function AppSettings() {
   const { theme, setTheme } = useTheme();
@@ -526,6 +527,8 @@ export default function AppSettings() {
             </CardContent>
           </Card>
         )}
+
+        {isSuperAdmin && <AndroidUpdateCard />}
 
         {/* Account */}
         {/* Legal — required to be reachable in-app for Google Play / App Store */}

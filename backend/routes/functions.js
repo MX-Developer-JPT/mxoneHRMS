@@ -4660,6 +4660,25 @@ router.post('/:name', async (req, res) => {
       return res.json({ success: false, error: 'device_id, all or user_id required' });
     }
 
+    // Mandatory Android update: asked by the app before sign-in too, so it needs no account and reveals nothing but the minimum version.
+    case 'getAppUpdatePolicy': {
+      const { updateAnswer } = await import('../utils/appUpdate.js');
+      return res.json({ success: true, ...updateAnswer(await getAndroidUpdatePolicy(), { platform: p.platform, build: p.build }) });
+    }
+    case 'getAppUpdateSettings':
+    case 'setAppUpdateSettings': {
+      if (!(await hasRole(cu, ['admin']))) return res.status(403).json({ error: 'Admin access required' });
+      const { normalizePolicy } = await import('../utils/appUpdate.js');
+      if (req.params.name === 'setAppUpdateSettings') {
+        const next = normalizePolicy(p.policy);
+        if (p.policy?.enabled === true && !next.enabled) return res.json({ success: false, error: 'Enter the build number of the new version first' });
+        await run("INSERT INTO settings(key,value,updated_at) VALUES('android_update_policy',$1,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT", [JSON.stringify({ ...next, updated_by: cu.id, updated_at: new Date().toISOString() })]);
+        console.log('[app-update] mandatory Android update ' + (next.enabled ? 'ON, minimum build ' + next.min_build : 'off') + ' (by ' + cu.id.slice(0, 8) + ')');
+      }
+      const phones = await all("SELECT COALESCE(data::jsonb->>'app_version','') AS version, COUNT(*)::int AS count FROM entities WHERE type='TrackingDevice' AND data::jsonb->>'platform'='android' GROUP BY 1 ORDER BY 1 DESC");
+      return res.json({ success: true, policy: await getAndroidUpdatePolicy(), phones });
+    }
+
     case 'getMyGeofence': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const gfEmpRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [cu.id]);
@@ -22141,6 +22160,11 @@ async function getEligibleFieldEmployees() {
 }
 // What a phone last said about its own location permission / GPS / battery, plus a short history of changes and of rejected
 // (mock) locations. One private row per employee (TrackingDevice); only the field-duty / geofence functions touch it.
+async function getAndroidUpdatePolicy() {
+  const { normalizePolicy } = await import('../utils/appUpdate.js');
+  try { const r = await one("SELECT value FROM settings WHERE key='android_update_policy'"); return normalizePolicy(r ? JSON.parse(r.value) : null); } catch { return normalizePolicy(null); }
+}
+
 async function recordTrackingDevice(userId, report, extra) {
   const release = await keyedLock('td:' + userId);   // reports, mock flags and geofence history rewrite the same row
   try { return await writeTrackingDevice(userId, report, extra); } finally { release(); }

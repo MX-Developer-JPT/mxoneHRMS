@@ -19,6 +19,7 @@ import ForgotPassword from '@/pages/ForgotPassword';
 import ResetPassword from '@/pages/ResetPassword';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import AiConsentModal from '@/components/AiConsentModal';
+import UpdateGate from '@/components/UpdateGate';
 const AttendanceReports = lazy(() => import('./pages/AttendanceReports'));
 const AttendanceRegularisation = lazy(() => import('./pages/AttendanceRegularisation'));
 const AttendanceExemption = lazy(() => import('./pages/AttendanceExemption'));
@@ -726,6 +727,7 @@ function App() {
       <Toaster />
       <SonnerToaster richColors position="top-right" />
       <AiStatusBanner />
+      <UpdateGate />   {/* Android app only: blocks while a mandatory update is pending, sign-in screen included */}
     </QueryClientProvider>
     </ThemeProvider>
   );
