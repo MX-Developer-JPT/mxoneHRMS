@@ -456,7 +456,7 @@ cron.schedule('30 9 * * *', async () => {
 }, { timezone: 'Asia/Kolkata' });
 
 // ── Working-day leave grants — 3:00 AM IST (after the 2 AM attendance close) ──
-// CL +1 / 40 working days, SL +1 / 40 (manager tier and above), EL +1 / 20 (after probation), counted from 1 Oct 2026.
+// CL +1 / 20 working days (confirmed, max 7; interns 1 a month), SL +1 / 20 (manager and above, max 7), EL +1 / 20 (after probation), from 1 Oct 2026.
 cron.schedule('0 3 * * *', async () => {
   try { const { runLeaveGrants } = await import('./cron/leaveGrantAutomation.js'); await runLeaveGrants(); }
   catch (err) { console.error('[leave-grant] failed:', err.message); }

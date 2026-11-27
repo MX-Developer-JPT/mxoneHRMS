@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Zap, Loader2, Users, Download, Upload, Search } from 'lucide-react';
+import { FileText, Check, X, Clock, Filter, Plus, CheckCheck, XCircle, Loader2, Users, Download, Upload, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
@@ -31,28 +31,6 @@ const POLICY_COLORS = {
   EL: 'bg-green-100 text-green-700',
   SL: 'bg-purple-100 text-purple-700'
 };
-
-function ELGrantButton() {
-  const [running, setRunning] = useState(false);
-  const run = async () => {
-    if (!window.confirm('Run auto EL grant for all employees?\n\nThis will credit 1 Earned Leave for every 40 present days (including Sundays and official holidays) that have not yet been credited.')) return;
-    setRunning(true);
-    try {
-      const res = await base44.functions.invoke('grantEarnedLeaveFor40Days', {});
-      const r = res.data;
-      toast.success(`Granted ${r.total_granted} Earned Leave(s) across ${r.results?.length || 0} employee(s)`);
-    } catch (e) {
-      toast.error('EL grant failed: ' + e.message);
-    }
-    setRunning(false);
-  };
-  return (
-    <Button size="sm" variant="outline" onClick={run} disabled={running} className="border-green-300 text-green-700 hover:bg-green-50">
-      {running ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Zap className="w-4 h-4 mr-1" />}
-      Auto-Grant EL (40-day rule)
-    </Button>
-  );
-}
 
 export default function LeaveManagement() {
   const [user, setUser] = useState(null);
@@ -156,10 +134,6 @@ export default function LeaveManagement() {
         setLeaveWorkflow(lwf?.steps?.length ? lwf : null);
       } catch { setLeaveWorkflow(null); }
 
-      // Silently run auto EL grant (1 EL per 40 present days) — deduplication handled server-side
-      base44.functions.invoke('grantEarnedLeaveFor40Days', {})
-        .then(res => { const r = res?.data; if (r?.total_granted > 0) toast.success(`Auto-granted ${r.total_granted} Earned Leave(s) for qualifying employee(s)`); })
-        .catch(() => {});
     } catch (error) {
       console.error('Error loading:', error);
     } finally {
@@ -484,7 +458,6 @@ export default function LeaveManagement() {
             <h1 className="text-2xl font-bold text-gray-900">Leave Management</h1>
             <p className="text-gray-500 text-sm mt-1">Review and approve employee leave requests</p>
           </div>
-          {isHR && <ELGrantButton />}
         </div>
 
         <Tabs defaultValue="requests" className="space-y-6" onValueChange={(v) => { if (v === 'history' && !leaveHistory.length) loadLeaveHistory(); }}>

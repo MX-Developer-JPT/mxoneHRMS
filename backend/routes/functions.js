@@ -19538,93 +19538,11 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
 
     /* ── Training ────────────────────────────────────── */
 
-    /* ── Auto-grant 1 EL per 40 present days ────────── */
+    // Retired: EL is credited every 20 working days by cron/leaveGrantAutomation.js. This older "1 EL per 40 present days"
+    // rule ran on top of it (it was triggered by opening Leave Management), so it now credits nothing. Kept so an older
+    // app screen still gets an answer.
     case 'grantEarnedLeaveFor40Days': {
-      // Every 40 actual present days (non-consecutive) → credit 1 EL.
-      // "Present" = attendance status in (present, late, on_duty, work_from_home, half_day).
-      // Sundays and holidays are NOT counted — only actual attendance records.
-      const now        = new Date();
-      const empRows    = await all("SELECT id,user_id,data FROM entities WHERE type='Employee' AND status='active'");
-      const employees  = empRows.map(r => ({ id: r.id, user_id: r.user_id, ...JSON.parse(r.data) }));
-
-      // Resolve EL leave policy (code='EL' or name contains 'Earned')
-      const elPolicyRow = await one(
-        "SELECT id FROM entities WHERE type='LeavePolicy' AND (data::jsonb->>'code'='EL' OR data::jsonb->>'name' ILIKE '%earned%') LIMIT 1"
-      );
-      const elPolicyId = elPolicyRow?.id || null;
-      const currentYear = now.getFullYear();
-
-      let granted = 0;
-      const results = [];
-
-      for (const emp of employees) {
-        const startDate = emp.date_of_joining || emp.joining_date || '2020-01-01';
-        // Use data::jsonb cast — entities.data is TEXT, not JSONB
-        const attRows = await all(
-          "SELECT data::jsonb->>'date' as d, data::jsonb->>'status' as s FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date' >= $2",
-          [emp.user_id, startDate]
-        );
-
-        // Count only actual present-like attendance records (no Sundays/holidays)
-        let presentCount = 0;
-        for (const r of attRows) {
-          if (!r.d || !r.s) continue;
-          if (['present', 'late', 'on_duty', 'work_from_home', 'half_day'].includes(r.s)) {
-            presentCount++;
-          }
-        }
-
-        const elEntitledCount = Math.floor(presentCount / 40);
-        if (elEntitledCount <= 0) continue;
-
-        // How many EL grants have already been credited (tracked in ELAutoGrant entities)
-        const grantCountRow = await one(
-          "SELECT COUNT(*) as c FROM entities WHERE type='ELAutoGrant' AND user_id=$1",
-          [emp.user_id]
-        );
-        const alreadyGranted = parseInt(grantCountRow?.c || 0);
-        const toGrant = elEntitledCount - alreadyGranted;
-        if (toGrant <= 0) continue;
-
-        // Credit EL balance (look up by leave_policy_id + year; fall back to creating a new record)
-        if (elPolicyId) {
-          const lbRow = await one(
-            "SELECT id,data FROM entities WHERE type='LeaveBalance' AND user_id=$1 AND data::jsonb->>'leave_policy_id'=$2 AND data::jsonb->>'year'=$3 LIMIT 1",
-            [emp.user_id, elPolicyId, String(currentYear)]
-          );
-          if (lbRow) {
-            const lb = JSON.parse(lbRow.data);
-            await run("UPDATE entities SET data=$1 WHERE id=$2", [
-              JSON.stringify({
-                ...lb,
-                available:       (parseFloat(lb.available)       || 0) + toGrant,
-                total_allocated: (parseFloat(lb.total_allocated) || 0) + toGrant,
-                updated_at: now.toISOString(),
-              }),
-              lbRow.id,
-            ]);
-          } else {
-            const newId = uuidv4();
-            await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LeaveBalance',$2,'active',$3)", [
-              newId, emp.user_id,
-              JSON.stringify({ id: newId, user_id: emp.user_id, leave_policy_id: elPolicyId, year: currentYear, total_allocated: toGrant, available: toGrant, used: 0, pending_approval: 0, created_at: now.toISOString(), updated_at: now.toISOString() }),
-            ]);
-          }
-        }
-
-        // Record each grant so we never double-credit
-        for (let i = 0; i < toGrant; i++) {
-          const grantId = uuidv4();
-          await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'ELAutoGrant',$2,'active',$3)", [
-            grantId, emp.user_id,
-            JSON.stringify({ id: grantId, user_id: emp.user_id, days: 1, present_count_at_grant: presentCount, el_policy_id: elPolicyId, granted_at: now.toISOString() }),
-          ]);
-        }
-
-        granted += toGrant;
-        results.push({ employee: emp.display_name || emp.user_id, granted: toGrant, presentCount, elEntitledCount, alreadyGranted });
-      }
-      return res.json({ success: true, total_granted: granted, results, el_policy_found: !!elPolicyId });
+      return res.json({ success: true, total_granted: 0, retired: true, message: 'Earned Leave is credited automatically every 20 working days.' });
     }
 
     /* ── Save generated letter to employee Documents ─── */
