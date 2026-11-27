@@ -60,6 +60,7 @@ export async function moveCandidate(c, to, { by = '', byName = '', text = '', sy
     next.timeline = LC.appendTimeline(c, { type: 'note', text, by, by_name: byName, ref });
   }
   await saveCand(next);
+  if (to === 'joined' && from !== 'joined') await import('./mrf.js').then((m) => m.mrfCandidateJoined(next, by)).catch((e) => console.warn('[mrf] join hook failed:', e.message));
   return next;
 }
 /** Candidates parsed before the CV started filling blanks: bring experience / company / notice from the parsed CV (only where the form was empty). */

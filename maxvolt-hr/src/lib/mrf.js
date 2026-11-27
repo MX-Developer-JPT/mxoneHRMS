@@ -26,16 +26,6 @@ export const PRIORITY_CLS = { critical: 'bg-red-100 text-red-700', high: 'bg-ora
 export const STAGES = [['draft', 'Draft'], ['pending_hm_approval', 'JD approval'], ['pending_hr_publication', 'HR publication'], ['published', 'Published'], ['closed', 'Filled / closed']];
 export const stageIndex = (status) => ({ draft: 0, changes_requested: 0, pending_hm_approval: 1, pending_hr_publication: 2, published: 3, on_hold: 3, closed: 4, cancelled: 4, rejected: 4 }[status] ?? 0);
 
-const addDays = (ymd, n) => { const d = new Date(`${ymd}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
-/** Recommended 15-45 day hiring window — advice only; the form never blocks on it. */
-export function timelineHint(baseYmd, targetYmd, minDays = 15, maxDays = 45) {
-  const win = { from: addDays(baseYmd, minDays), to: addDays(baseYmd, maxDays) };
-  if (!targetYmd) return { ...win, state: 'none', message: `Recommended hiring window: ${win.from} to ${win.to} (${minDays}–${maxDays} days from approval).` };
-  const days = Math.round((Date.parse(`${targetYmd}T00:00:00Z`) - Date.parse(`${baseYmd}T00:00:00Z`)) / 86400000);
-  if (days < minDays) return { ...win, days, state: 'aggressive', message: `${days} day(s) away — an aggressive timeline (recommended ${minDays}–${maxDays} days). You can still submit; add a justification if it is urgent.` };
-  if (days > maxDays) return { ...win, days, state: 'extended', message: `${days} days away — longer than the usual ${maxDays}-day window. Consider whether the timeline can be shortened.` };
-  return { ...win, days, state: 'ideal', message: `Within the recommended ${minDays}–${maxDays}-day hiring window.` };
-}
 export const today = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
 export const fmt = (iso, withTime = false) => {
   if (!iso) return '—';
@@ -57,5 +47,13 @@ export function suggestTier(designation, masters) {
   const has = (v) => (masters?.position_tier || []).some((m) => m.value === v);
   for (const [re, v] of TIER_RULES) if (re.test(designation || '') && has(v)) return v;
   return has('executive') && designation ? 'executive' : '';
+}
+/** Experience in numbers: the typed fields, or an older requisition's list ranges. */
+export function experienceYears(r, masters) {
+  const has = (v) => v !== undefined && v !== null && v !== '';
+  if (has(r?.exp_min_years) || has(r?.exp_max_years)) return { min: r.exp_min_years ?? '', max: r.exp_max_years ?? '' };
+  const meta = (v) => (masters?.experience_range || []).find((m) => m.value === v)?.meta;
+  const lo = meta(r?.exp_min); const hi = meta(r?.exp_max) || lo;
+  return { min: lo?.min ?? '', max: hi?.max ?? '' };
 }
 export const plusDays = (n) => { const d = new Date(Date.now() + 5.5 * 3600 * 1000 + n * 86400000); return d.toISOString().slice(0, 10); };

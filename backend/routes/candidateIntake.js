@@ -238,6 +238,9 @@ const H = {
     const r = await one("SELECT id, data FROM entities WHERE type='Candidate' AND id=$1", [p.candidate_id]); if (!r) return fail(res, 'Candidate not found', 404);
     const c = { ...jparse(r.data), id: r.id };
     if (c.requisition_id || c.job_id) return fail(res, 'This candidate already has a requisition');
+    const onReq = (await all("SELECT id, data FROM entities WHERE type='Candidate'")).map((x) => ({ ...jparse(x.data), id: x.id }));
+    const dup = LC.samePersonOnRequisition(onReq, { ...c, requisition_id: req.id });
+    if (dup) return fail(res, `${candName(dup)} is already a candidate on this requisition (same email or phone)`, 409);
     const next = { ...c, requisition_id: req.id, job_id: req.id, position_applied: c.position_applied || reqTitle(req), department: c.department || req.department || '', needs_requisition: false, timeline: LC.appendTimeline(c, { type: 'note', text: `Linked to ${reqNo(req) || reqTitle(req)}`, by: cx.cu.id, by_name: cx.name }) };
     await saveCand(next); return res.json({ success: true });
   },

@@ -14110,8 +14110,9 @@ ${contextBlock || 'No employee context available — answer from general policy 
       const email = normalizeEmail(candidateData?.email);
       const phone = normalizePhone(candidateData?.phone);
 
-      if (resolvedJobId && (email || phone)) {
-        const existingRows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND data::jsonb->>'job_id'=$1", [resolvedJobId]);
+      if (!resolvedJobId) return res.json({ success: false, error: 'Choose the position you are applying for.' });
+      if (email || phone) {
+        const existingRows = await all("SELECT id,data FROM entities WHERE type='Candidate' AND (data::jsonb->>'job_id'=$1 OR data::jsonb->>'requisition_id'=$1)", [resolvedJobId]);
         const dup = existingRows
           .map(r => ({ id: r.id, data: JSON.parse(r.data) }))
           .find(r => (email && normalizeEmail(r.data.email) === email) || (phone && normalizePhone(r.data.phone) === phone));
@@ -14148,6 +14149,7 @@ ${contextBlock || 'No employee context available — answer from general policy 
         position_applied: appliedJob?.position_title || jobTitle,
         department: appliedJob?.department || jobDepartment,
         ...(candidateData || {}),
+        job_id: resolvedJobId, requisition_id: resolvedJobId,
         status: 'applied', timeline: [{ at: new Date().toISOString(), type: 'status', to: 'applied', text: 'Applied through the careers page', by_name: 'Candidate' }],
         applied_date: new Date().toISOString(),
         status_token: statusToken,
@@ -20712,6 +20714,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         if (chk.same) continue;
         const nd = { ...d, status: bucStatus, timeline: HLC.appendTimeline(d, { type: 'status', from: d.status || 'applied', to: bucStatus, text: `${HLC.statusLabel(d.status)} → ${HLC.statusLabel(bucStatus)} (bulk)`, by: cu?.id, by_name: cu?.full_name || '', ...(chk.override ? { override: true, reason: p.override_reason } : {}) }) };
         await run("UPDATE entities SET data=$1,status=$2,updated_at=NOW()::TEXT WHERE id=$3", [JSON.stringify(nd), bucStatus, row.id]);
+        if (bucStatus === 'joined') await import('./mrf.js').then((m) => m.mrfCandidateJoined(nd, cu?.id)).catch((e) => console.warn('[mrf] join hook failed:', e.message));
         bucDone++;
       }
       cacheInvalidate('Candidate');

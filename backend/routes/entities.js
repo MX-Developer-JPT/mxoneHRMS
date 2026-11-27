@@ -179,12 +179,24 @@ async function autoPromoteReportingManager(managerId) {
 // New-style manpower requisitions (mrf_version 2) carry CTC, notes and an audit trail: only HR / admin / management / recruiters, the
 // person who raised it and its Hiring Manager may read them. Older requisitions are unchanged.
 async function filterMrfRows(data, cu, type) {
-  if (type !== 'JobRequisition') return data;
+  if (type !== 'JobRequisition' && type !== 'MrfRulesConfig') return data;
   const role = await getEffectiveRole(cu);
   let roles = [role];
   try { const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]); roles = [u?.role, u?.custom_role]; } catch { /* use effective role only */ }
-  if (roles.some(r => ['hr', 'admin', 'management', 'recruiter'].includes(r))) return data;
-  return data.filter(d => d.mrf_version !== 2 || d.requested_by === cu.id || d.hiring_manager_id === cu.id);
+  const isHr = roles.some(r => ['hr', 'admin'].includes(r));
+  if (type === 'MrfRulesConfig') return isHr ? data : [];      // pay bands are HR's configuration
+  // validation flags that describe other people's salaries are for HR / admin only
+  const trim = d => {
+    if (isHr || d.mrf_version !== 2 || (!d.validation && !d.flag_overrides)) return d;
+    const hidden = code => code === 'pay_history';
+    return { ...d,
+      ...(d.validation ? { validation: { ...d.validation, flags: (d.validation.flags || []).filter(f => !hidden(f.code)) } } : {}),
+      ...(d.flag_overrides ? { flag_overrides: Object.fromEntries(Object.entries(d.flag_overrides).filter(([, o]) => !hidden(o.code))) } : {}) };
+  };
+  if (roles.some(r => ['hr', 'admin', 'management', 'recruiter'].includes(r))) return data.map(trim);
+  // a Department Head also sees their department's requisitions once they are submitted
+  const headed = new Set((await all("SELECT data FROM entities WHERE type='Department' AND data::jsonb->>'head_user_id'=$1", [cu.id])).map(r => JSON.parse(r.data).name));
+  return data.filter(d => d.mrf_version !== 2 || d.requested_by === cu.id || d.hiring_manager_id === cu.id || (headed.has(d.department) && d.status !== 'draft')).map(trim);
 }
 
 // Exit cases: HR / admin / management see everything. The employee sees their own case (without HR's private notes and interview).
@@ -242,6 +254,8 @@ async function canAccessSensitive(cu, type, ownerUserId) {
 // managing these for up to 30 days, the same staleness bug fixed everywhere
 // else in this file's authorization pass.
 async function requireAdminForType(cu, res, type) {
+  // requisition dropdown lists and validation rules are changed only from their own screen (which checks the role and keeps history)
+  if (type === 'MrfMaster' || type === 'MrfRulesConfig') { res.status(403).json({ error: 'Change this from the Manpower Requisition configuration screen' }); return false; }
   if (type === 'AppLocation') {
     const role = await getEffectiveRole(cu);
     if (role !== 'admin') { res.status(403).json({ error: 'Admin role required to manage locations' }); return false; }
@@ -918,10 +932,19 @@ router.get('/:type/:id', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Not found' });
   const data = parseRow(row);
   if (!(await canAccessSensitive(cu, type, data.user_id))) return res.status(403).json({ error: 'Access denied' });
-  if (type === 'JobRequisition' && data.mrf_version === 2 && (await filterMrfRows([data], cu, type)).length === 0) return res.status(403).json({ error: 'Access denied' });
+  if (type === 'MrfRulesConfig' || (type === 'JobRequisition' && data.mrf_version === 2)) {
+    const [visible] = await filterMrfRows([data], cu, type);
+    if (!visible) return res.status(403).json({ error: 'Access denied' });
+    return res.json(visible);
+  }
   if (type === 'Exit') { const visible = await filterExitRows([data], cu); if (!visible.length) return res.status(403).json({ error: 'Access denied' }); return res.json(visible[0]); }
   res.json(data);
 });
+
+async function candidatesOn(reqId) {
+  const rows = await all("SELECT id, data FROM entities WHERE type='Candidate' AND (data::jsonb->>'requisition_id'=$1 OR data::jsonb->>'job_id'=$1 OR data::jsonb->>'job_requisition_id'=$1)", [reqId]);
+  return rows.map(r => ({ ...JSON.parse(r.data), id: r.id }));
+}
 
 /* ── CREATE  POST /api/entities/:type ─────────────────── */
 router.post('/:type', async (req, res) => {
@@ -933,6 +956,16 @@ router.post('/:type', async (req, res) => {
   const id = body.id || uuidv4();
   const data = { ...body, id };
   if (type === 'JobRequisition') { for (const k of ['mrf_version', 'approved_jd', 'jd_versions', 'audit', 'requisition_id', 'hm_approved_at']) delete data[k]; }
+  // every new candidate belongs to a requisition, once
+  if (type === 'Candidate') {
+    const lc = await import('../utils/hiringLifecycle.js');
+    const reqId = lc.requisitionOf(data);
+    if (!reqId || !(await one("SELECT id FROM entities WHERE type='JobRequisition' AND id=$1", [reqId]))) return res.status(400).json({ error: 'Choose the requisition (MRF) this candidate is for' });
+    const dup = lc.samePersonOnRequisition(await candidatesOn(reqId), data);
+    if (dup) return res.status(409).json({ error: `${dup.full_name || 'This person'} is already a candidate on this requisition (same email or phone)`, existing_id: dup.id });
+    data.requisition_id = reqId;
+    data.timeline = [{ at: new Date().toISOString(), type: 'status', to: data.status || 'applied', text: 'Added by HR', by: cu.id, by_name: cu.full_name || cu.email || '' }];
+  }
   if (type === 'Announcement') {
     const problem = announcementProblem(data);
     if (problem) return res.status(400).json({ error: problem });
@@ -1276,12 +1309,20 @@ router.patch('/:type/:id', async (req, res) => {
     delete updated.status_override_reason;
     updated.timeline = current.timeline || [];
     updated.review_batch_ids = current.review_batch_ids || [];
+    // moving or re-contacting a candidate must not create a second record of the same person on a requisition
+    const moved = lc.requisitionOf(updated) !== lc.requisitionOf(current);
+    const recontacted = ['email', 'phone'].some(k => k in req.body && String(req.body[k] || '') !== String(current[k] || ''));
+    if (moved || recontacted) {
+      const dup = lc.samePersonOnRequisition(await candidatesOn(lc.requisitionOf(updated)), { ...updated, id });
+      if (dup) return res.status(409).json({ error: `${dup.full_name || 'This person'} is already a candidate on this requisition (same email or phone)` });
+      if (moved) updated.timeline = lc.appendTimeline(current, { type: 'note', text: `Requisition changed from ${lc.requisitionOf(current) || 'none'} to ${lc.requisitionOf(updated) || 'none'}`, by: cu.id, by_name: cu.full_name || cu.email || '' });
+    }
     if (req.body.status !== undefined && req.body.status !== (current.status || 'applied')) {
       const role = await getEffectiveRole(cu);
       const chk = lc.checkTransition(current, req.body.status, { role, override_reason: ovReason2 || ovReason });
       if (!chk.ok) return res.status(400).json({ error: chk.error, needs_override: !!chk.needs_override });
       const from = current.status || 'applied';
-      updated.timeline = lc.appendTimeline(current, { type: 'status', from, to: req.body.status, text: `${lc.statusLabel(from)} → ${lc.statusLabel(req.body.status)}`, by: cu.id, by_name: cu.full_name || cu.email || '', ...(chk.override ? { override: true, reason: ovReason2 || ovReason } : {}) });
+      updated.timeline = lc.appendTimeline(updated, { type: 'status', from, to: req.body.status, text: `${lc.statusLabel(from)} → ${lc.statusLabel(req.body.status)}`, by: cu.id, by_name: cu.full_name || cu.email || '', ...(chk.override ? { override: true, reason: ovReason2 || ovReason } : {}) });
       if (req.body.status === 'on_hold') updated.held_from = from;
     }
   }

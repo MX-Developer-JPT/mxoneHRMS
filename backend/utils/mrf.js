@@ -1,6 +1,7 @@
 // Manpower Requisition Form (MRF) — pure rules: master defaults, form sanitising / validation, the hiring-timeline hint,
 // JD text helpers, status workflow, and a deterministic JD / keyword fallback so the flow never depends on the AI being up.
 // Everything stateful (database, notifications, permissions) lives in routes/mrf.js.
+// The configurable validation / anomaly rules, the experience check and the hiring-target window live in utils/mrfRules.js.
 //
 // Ownership rule enforced by the routes, in one line: the Hiring Manager owns and approves the Job Description, HR owns
 // publication, AI only drafts text and never decides anything.
@@ -16,14 +17,16 @@ export const WORKFLOW = {
   cancelled: { label: 'Cancelled', step: 6 },
   rejected: { label: 'Rejected by Hiring Manager', step: 6 },
 };
+import { experienceProblem, experienceText, targetDateProblem } from './mrfRules.js';
 export const OPEN_STATUSES = ['draft', 'pending_hm_approval', 'changes_requested', 'pending_hr_publication', 'published', 'on_hold'];
 
 // ── master data defaults (seeded once into the MrfMaster entity; HR can add / edit / deactivate / reorder afterwards) ──
 const L = (arr) => arr.map((v) => (Array.isArray(v) ? { value: v[0], label: v[1], meta: v[2] } : { value: String(v).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''), label: v }));
 export const DEFAULT_MASTERS = {
+  budget_status: L(['Annual Budget', 'Budgeted', 'Non-Budgeted', 'Budget Replacement']),
   position_tier: L(['Executive', 'Senior Executive', 'Deputy Manager', 'Assistant Manager', 'Manager', 'Senior Manager', 'Territory Manager', 'Team Leader', 'Area Manager', 'Regional Manager', 'General Manager', 'Assistant General Manager', 'Deputy General Manager', 'Vice President', 'Senior Vice President', 'Director', 'Managing Director', 'Chief Executive Officer', 'Chief Financial Officer', 'Chief Operating Officer', 'Other / Custom']),
   experience_range: L([['fresher', 'Fresher', { min: 0, max: 0 }], ['0_1', '0–1 Years', { min: 0, max: 1 }], ['1_2', '1–2 Years', { min: 1, max: 2 }], ['3_5', '3–5 Years', { min: 3, max: 5 }], ['5_7', '5–7 Years', { min: 5, max: 7 }], ['8_10', '8–10 Years', { min: 8, max: 10 }], ['10_12', '10–12 Years', { min: 10, max: 12 }], ['12_15', '12–15 Years', { min: 12, max: 15 }], ['15_20', '15–20 Years', { min: 15, max: 20 }], ['above_20', 'Above 20 Years', { min: 20, max: 99 }]]),
-  requisition_type: L([['new_position', 'New Position'], ['replacement', 'Replacement'], ['additional_manpower', 'Additional Manpower'], ['temporary', 'Temporary'], ['contractual', 'Contractual']]),
+  requisition_type: L([['new_position', 'New Position'], ['replacement', 'Replacement'], ['additional_manpower', 'Additional Manpower'], ['backfill_expansion', 'Backfill / Expansion']]),
   employment_type: L([['full_time', 'Full-time'], ['part_time', 'Part-time'], ['contract', 'Contract'], ['internship', 'Internship']]),
   priority: L([['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']]),
   hiring_reason: L(['Business growth', 'Attrition / resignation', 'New project', 'Restructuring', 'Backfill for long leave', 'Seasonal demand', 'Skill gap', 'Other']),
@@ -69,7 +72,7 @@ export const DEFAULT_MASTERS = {
   skill: L(['Communication', 'Negotiation', 'MS Excel', 'ERP / SAP', 'CRM', 'Lead Generation', 'Project Management', 'Team Leadership', 'Quality Assurance', 'Supply Chain', 'Data Analysis', 'Customer Service']),
 };
 export const MASTER_LABELS = {
-  position_tier: 'Position Tiers', experience_range: 'Experience Ranges', requisition_type: 'Requisition Types', employment_type: 'Employment Types', priority: 'Priorities',
+  budget_status: 'Budget Status', position_tier: 'Position Tiers', experience_range: 'Experience Ranges', requisition_type: 'Requisition Types', employment_type: 'Employment Types', priority: 'Priorities',
   hiring_reason: 'Hiring Reasons', designation: 'Designations', work_location_type: 'Work Location Types', work_arrangement: 'Work Arrangements', remote_region: 'Remote Regions', ctc_frequency: 'CTC Frequencies',
   qualification: 'Educational Qualifications', skill: 'Skills & Competencies',
 };
@@ -77,10 +80,10 @@ export const MASTER_LABELS = {
 // ── form fields ──
 const S = (max = 200) => ({ t: 's', max }); const A = (max = 40) => ({ t: 'a', max }); const N = { t: 'n' }; const B = { t: 'b' }; const D = { t: 'd' };
 export const FIELDS = {
-  requisition_type: S(40), department: S(100), designation: S(120), position_tier: S(80), position_tier_custom: S(80), number_of_positions: N, hiring_manager_id: S(60), reports_to_user_id: S(60),
+  budget_status: S(40), requisition_type: S(40), department: S(100), designation: S(120), position_tier: S(80), position_tier_custom: S(80), number_of_positions: N, hiring_manager_id: S(60), reports_to_user_id: S(60),
   employment_type: S(30), priority: S(20), hiring_reason: S(80),
   replaced_employee_user_id: S(60), replaced_employee_name: S(120), replaced_employee_code: S(40), replacement_reason: S(300), expected_relieving_date: D,
-  exp_mode: S(10), exp_min: S(20), exp_max: S(20), qualification: A(15), specialisation: A(15), required_skills: A(40), technical_skills: A(40), industry_experience: A(15), certifications: A(15),
+  exp_mode: S(10), exp_min_years: N, exp_max_years: N, exp_min: S(20), exp_max: S(20), qualification: A(15), specialisation: A(15), required_skills: A(40), technical_skills: A(40), industry_experience: A(15), certifications: A(15),
   gender_preference: S(30), age_criteria: S(60),
   ctc_min: N, ctc_max: N, ctc_frequency: S(20), budget_approved: B, budget_reference: S(120), compensation_remarks: S(500), disclose_ctc: B,
   work_location_type: S(30), work_location: S(160), work_state: S(80), work_city: S(80), work_country: S(80), is_remote: B, work_arrangement: S(20), remote_region: S(30), remote_region_detail: S(120),
@@ -107,32 +110,28 @@ export function cleanForm(input) {
 
 export const expRangeIndex = (masters, value) => (masters?.experience_range || []).findIndex((m) => m.value === value);
 
-/** Problems that stop a submission (empty = OK). `masters` = { kind: [{value,label,order,is_active}] } from the database. */
-export function submitProblems(f, masters = {}) {
+/**
+ * Problems that stop a submission (empty = OK). `masters` = { kind: [{value,label,order,is_active}] } from the database.
+ * `submissionDate` (YYYY-MM-DD) also checks the hiring target date against the 15–45 day window from that day.
+ */
+export function submitProblems(f, masters = {}, { submissionDate } = {}) {
   const e = [];
   const need = (v, label) => { if (v === undefined || v === null || String(v).trim() === '' || (Array.isArray(v) && !v.length)) e.push(`${label} is required`); };
+  const listed = (kind, v, label) => { const list = (masters[kind] || []).filter((m) => m.is_active !== false); if (v && list.length && !list.some((m) => m.value === v)) e.push(`${label}: choose one of ${list.map((m) => m.label).join(', ')}`); };
+  need(f.budget_status, 'Budget status'); listed('budget_status', f.budget_status, 'Budget status');
+  listed('requisition_type', f.requisition_type, 'Requisition type');
   need(f.requisition_type, 'Requisition type'); need(f.department, 'Department'); need(f.designation, 'Designation'); need(f.position_tier, 'Position tier');
   if (!(Number(f.number_of_positions) >= 1)) e.push('Number of vacancies must be at least 1');
   need(f.hiring_manager_id, 'Hiring manager'); need(f.employment_type, 'Employment type'); need(f.priority, 'Priority');
   if (f.position_tier === 'other_custom') need(f.position_tier_custom, 'Custom position tier');
-  if (f.requisition_type === 'replacement') { need(f.replaced_employee_name, 'Employee being replaced'); need(f.replacement_reason, 'Reason for replacement'); }
-  if (f.exp_min && f.exp_max) { const a = expRangeIndex(masters, f.exp_min), b = expRangeIndex(masters, f.exp_max); if (a >= 0 && b >= 0 && b < a) e.push('Maximum experience cannot be lower than the minimum'); }
+  if (f.requisition_type === 'replacement') { need(f.replaced_employee_user_id, 'Replacement Of (the employee being replaced)'); need(f.replacement_reason, 'Reason for replacement'); }
+  const expBad = experienceProblem(f, masters); if (expBad) e.push(expBad);
   if (f.ctc_min != null && f.ctc_max != null && Number(f.ctc_max) < Number(f.ctc_min)) e.push('Maximum CTC cannot be lower than the minimum CTC');
   need(f.work_arrangement, 'Work arrangement');
   if (!String(f.work_location || '').trim() && !String(f.work_city || '').trim() && !(f.is_remote && (f.remote_region || f.remote_region_detail))) e.push('Work location (or city / remote region) is required');
   if (!String(f.position_overview || '').trim() && !(f.key_responsibilities || []).length) e.push('Add a position overview or at least one key responsibility');
+  if (submissionDate) { const t = targetDateProblem(submissionDate, f.target_hire_date); if (t) e.push(t); }
   return e;
-}
-
-// ── hiring timeline (a recommendation, never a restriction) ──
-const addDays = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
-export function timelineHint(baseYmd, targetYmd, minDays = 15, maxDays = 45) {
-  const win = { from: addDays(baseYmd, minDays), to: addDays(baseYmd, maxDays) };
-  if (!targetYmd) return { ...win, state: 'none', message: `Recommended hiring window: ${win.from} to ${win.to} (${minDays}–${maxDays} days from approval).` };
-  const days = Math.round((Date.parse(targetYmd + 'T00:00:00Z') - Date.parse(baseYmd + 'T00:00:00Z')) / 86400000);
-  if (days < minDays) return { ...win, days, state: 'aggressive', message: `This is ${days} day(s) away — an aggressive timeline (recommended: ${minDays}–${maxDays} days). You can still submit; add a justification if it is urgent.` };
-  if (days > maxDays) return { ...win, days, state: 'extended', message: `This is ${days} days away — longer than the usual ${maxDays}-day hiring window. Consider whether the timeline can be shortened.` };
-  return { ...win, days, state: 'ideal', message: `Within the recommended ${minDays}–${maxDays}-day hiring window.` };
 }
 
 // ── JD text ──
@@ -143,6 +142,7 @@ export const isMaterialJdChange = (a, b) => normalizeJd(a) !== normalizeJd(b);
 export const ABOUT_COMPANY = 'MaxVolt Energy Industries Limited (NSE SME: MAXVOLT) is an Indian lithium-ion battery pack and energy storage manufacturer based in Ghaziabad, building energy solutions for mobility and stationary storage. We value ownership, quality and a culture where people grow with the company.';
 const bullets = (arr) => (arr || []).map((x) => `• ${x}`).join('\n');
 const expLabel = (f, masters) => {
+  if (Number.isFinite(f.exp_min_years) || Number.isFinite(f.exp_max_years)) return experienceText(f, masters) || 'As per role';
   const find = (v) => (masters?.experience_range || []).find((m) => m.value === v);
   const lab = (v) => find(v)?.label || v || '';
   if (f.exp_mode === 'single' || !f.exp_max || f.exp_max === f.exp_min) return lab(f.exp_min) || lab(f.exp_max) || 'As per role';
@@ -282,6 +282,9 @@ export const canTransition = (from, to) => ({
   pending_hr_publication: ['published', 'changes_requested', 'pending_hm_approval', 'on_hold', 'cancelled'],
   published: ['on_hold', 'closed', 'cancelled', 'pending_hm_approval', 'pending_hr_publication'],
   on_hold: ['published', 'pending_hr_publication', 'closed', 'cancelled'],
+  closed: ['pending_hr_publication', 'changes_requested'],        // reopened
+  cancelled: ['pending_hr_publication', 'changes_requested'],
+  rejected: ['changes_requested'],
 }[from] || []).includes(to);
 
 /** Field-by-field changes between two versions of the form (for the audit trail). */

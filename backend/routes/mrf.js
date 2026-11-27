@@ -7,6 +7,8 @@
 //   • HR owns publication: it can publish, hold, return or close, but can never change the approved JD — a change goes back to the
 //     Hiring Manager, and any material change to an approved JD voids the approval and unpublishes until it is approved again.
 //   • Approved JD versions are immutable (a snapshot with a content hash); every action lands in an append-only audit trail.
+//   • Validation flags (utils/mrfRules.js): a critical one blocks submission unless an authorised person overrides it with a reason.
+//   • Optional extra step (off by default): the Department Head approves before HR may publish.
 // Requisitions are stored on the existing JobRequisition entity (mrf_version: 2) with the legacy fields kept in step, so the
 // older recruitment pages, the careers page, the cron reminders and the MIS keep working; older requisitions are untouched.
 import { v4 as uuidv4 } from 'uuid';
@@ -16,11 +18,18 @@ import { callAI } from '../utils/ai.js';
 import { sendEmail } from '../utils/email.js';
 import { sendPushToUser } from '../utils/push.js';
 import * as M from '../utils/mrf.js';
+import * as VR from '../utils/mrfRules.js';
+import { keyedLock } from '../utils/keyedLock.js';
+import { loadHiringData } from '../utils/hiringMetrics.js';
+import { computeMrfMis } from '../utils/mrfMis.js';
+import { buildMrfMisWorkbook } from '../utils/mrfMisExport.js';
 
 const T = 'JobRequisition', MT = 'MrfMaster';
 const HR = ['hr', 'admin'];
 const CREATE_ROLES = ['hr', 'admin', 'management', 'manager', 'recruiter'];
 const PUBLISH_ROLES = ['hr', 'admin', 'recruiter'];
+const CFG_TYPE = 'MrfRulesConfig', CFG_ID = 'mrf-rules-config';
+const GONE = ['resigned', 'terminated', 'retired', 'inactive', 'absconded'];
 const jparse = (s) => { try { return JSON.parse(s); } catch { return null; } };
 const nowIso = () => new Date().toISOString();
 const istToday = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
@@ -70,6 +79,18 @@ async function ensureMasters() {
     let order = 0;
     for (const r of rows) { const id = uuidv4(); await run("INSERT INTO entities(id,type,status,is_active,data) VALUES($1,$2,'active',1,$3)", [id, MT, JSON.stringify({ id, kind, value: r.value, label: r.label, meta: r.meta || null, order: ++order, is_active: true, seeded: true })]); }
   }
+  if (have.has('requisition_type')) await upgradeRequisitionTypes();
+}
+// Lists seeded before "Backfill / Expansion" existed: add it once and retire the two types it replaces (HR can reactivate them).
+async function upgradeRequisitionTypes() {
+  const unlock = await keyedLock('mrf:masters');
+  try {
+    const rows = (await all("SELECT id, data FROM entities WHERE type=$1", [MT])).map((r) => ({ id: r.id, d: jparse(r.data) })).filter((x) => x.d?.kind === 'requisition_type');
+    if (rows.some((x) => x.d.value === 'backfill_expansion')) return;
+    for (const x of rows.filter((y) => y.d.seeded && ['temporary', 'contractual'].includes(y.d.value))) await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify({ ...x.d, is_active: false }), x.id]);
+    const id = uuidv4();
+    await run("INSERT INTO entities(id,type,status,is_active,data) VALUES($1,$2,'active',1,$3)", [id, MT, JSON.stringify({ id, kind: 'requisition_type', value: 'backfill_expansion', label: 'Backfill / Expansion', meta: null, order: Math.max(0, ...rows.map((x) => x.d.order || 0)) + 1, is_active: true, seeded: true })]);
+  } finally { unlock(); }
 }
 async function loadMasters(includeInactive = false) {
   await ensureMasters();
@@ -78,6 +99,56 @@ async function loadMasters(includeInactive = false) {
   for (const k of Object.keys(out)) out[k].sort((a, b) => (a.order || 0) - (b.order || 0));
   return out;
 }
+
+// ── validation rules ──
+async function loadRulesConfig() {
+  const r = await one("SELECT data FROM entities WHERE type=$1 AND id=$2", [CFG_TYPE, CFG_ID]);
+  return VR.normalizeConfig(r ? jparse(r.data) : null);
+}
+const departments = async () => (await all("SELECT data FROM entities WHERE type='Department'")).map((r) => jparse(r.data)).filter(Boolean);
+/** Existing annual pay per designation, from active salary structures of people still employed. Used only for comparison. */
+async function paySamples(P) {
+  const seen = new Set(); const out = [];
+  for (const r of await all("SELECT user_id, data FROM entities WHERE type='SalaryStructure' AND status='active' ORDER BY created_at DESC")) {
+    const e = P.empBy[r.user_id]; const s = jparse(r.data);
+    if (!e || !s || seen.has(r.user_id) || GONE.includes(e.status)) continue;
+    seen.add(r.user_id);
+    const annual = Math.max(Number(s.ctc) || 0, (Number(s.total_ctc) || 0) * 12);
+    if (annual > 0 && e.designation) out.push({ designation: e.designation, annual_ctc: annual });
+  }
+  return out;
+}
+/** The flags for a form as it stands now, with any overrides already granted on the requisition. */
+async function flagsFor(form, rec, P, masters) {
+  const config = await loadRulesConfig();
+  const replaced = form.replaced_employee_user_id ? P.empBy[form.replaced_employee_user_id] : null;
+  const flags = VR.evaluate(form, { id: rec?.id, config, masters, others: await allV2(), pay: await paySamples(P), replaced: replaced ? { name: replaced.display_name, department: replaced.department } : null });
+  return { config, flags: VR.applyOverrides(flags, rec?.flag_overrides || {}) };
+}
+const forViewer = (flags, cx) => VR.visibleFlags(flags || [], hasAny(cx, HR));
+/** Records an override on the requisition and in its audit trail. Returns an error message, or null. */
+function grantOverride(rec, cx, flag, justification) {
+  const text = String(justification || '').trim().slice(0, 1000);
+  if (text.length < VR.MIN_JUSTIFICATION) return `Give a justification of at least ${VR.MIN_JUSTIFICATION} characters to override “${flag.title}”.`;
+  const entry = { code: flag.code, severity: flag.severity, fingerprint: flag.fingerprint, justification: text, by: cx.cu.id, by_name: cx.name, role: cx.roles[0] || '', at: nowIso() };
+  rec.flag_overrides = { ...(rec.flag_overrides || {}), [flag.key]: entry };
+  addAudit(rec, cx, 'validation_override', `${VR.SEVERITY[flag.severity].label} “${flag.title}”${flag.sensitive ? '' : `: ${flag.message}`} — ${text}`, { flag: flag.key, severity: flag.severity });
+  return null;
+}
+async function overrideAudience(config) {
+  return (await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) = ANY($1::text[])", [config.override_roles])).map((r) => r.id);
+}
+
+// ── department head approval (only when the rules ask for it) ──
+async function deptHeadOf(department) { return (await departments()).find((d) => d.name === department)?.head_user_id || ''; }
+async function startDeptHeadApproval(rec, config) {
+  if (!VR.needsDeptHeadApproval(rec, config)) { rec.dh_approval = null; return null; }
+  const head = await deptHeadOf(rec.department);
+  const own = head && head === rec.hiring_manager_id;     // the Hiring Manager who just approved is the Department Head
+  rec.dh_approval = { required: true, status: own ? 'approved' : 'pending', head_user_id: head, jd_version: rec.approved_jd?.version || null, ...(own ? { by: head, at: nowIso(), comment: 'Approved as Hiring Manager (also Department Head)' } : {}) };
+  return own ? null : head;
+}
+const deptHeadCleared = (rec) => rec.dh_approval?.status === 'approved' && rec.dh_approval.jd_version === (rec.approved_jd?.version || null);
 
 async function rememberDesignation(name) {
   const t = String(name || '').trim(); if (!t) return;
@@ -117,7 +188,8 @@ const label = (rec) => `${rec.requisition_id} — ${rec.designation || 'position
 const isCreator = (rec, cx) => rec.requested_by === cx.cu.id;
 const isHm = (rec, cx) => !!rec.hiring_manager_id && rec.hiring_manager_id === cx.cu.id;
 const isOrgWide = (cx) => hasAny(cx, ['hr', 'admin', 'management', 'recruiter']);
-const canSee = (rec, cx) => isOrgWide(cx) || isCreator(rec, cx) || isHm(rec, cx);
+const isDeptHead = (rec, cx) => cx.headOf.has(rec.department);
+const canSee = (rec, cx) => isOrgWide(cx) || isCreator(rec, cx) || isHm(rec, cx) || (isDeptHead(rec, cx) && rec.status !== 'draft');
 
 // Hiring manager must be an active employee of the department (or that department's head).
 async function checkHiringManager(department, hmId, P) {
@@ -132,11 +204,14 @@ async function checkHiringManager(department, hmId, P) {
 function hydrate(rec, P) {
   return { ...rec, requested_by_name: P.name(rec.requested_by), hiring_manager_name: P.name(rec.hiring_manager_id), reports_to_name: P.name(rec.reports_to_user_id) };
 }
-const summary = (rec, P) => {
-  const h = hydrate(rec, P);
-  const { audit, jd_versions, approved_jd, ...rest } = h; void audit; void jd_versions;
-  return { ...rest, jd_current_version: (rec.jd_versions || []).length, jd_approved_version: approved_jd?.version || null };
-};
+/** hydrate(), minus what this viewer may not see (flags that describe other people's salaries). */
+function view(rec, P, cx) {
+  const out = hydrate(rec, P);
+  if (hasAny(cx, HR)) return out;
+  if (out.validation) out.validation = { ...out.validation, flags: forViewer(out.validation.flags, cx) };
+  if (out.flag_overrides) out.flag_overrides = Object.fromEntries(Object.entries(out.flag_overrides).filter(([, o]) => !VR.RULES[o.code]?.sensitive));
+  return out;
+}
 
 // ── AI ──
 // The prompts carry only role details (title, department, skills, location) — never a person's data — so MRF drafting does not depend on the per-user AI consent.
@@ -146,7 +221,7 @@ const ctxText = (f, masters) => {
   return [
     `Department: ${f.department || ''}`, `Designation: ${f.designation || ''}`, `Position tier: ${f.position_tier === 'other_custom' ? f.position_tier_custom : lab('position_tier', f.position_tier)}`,
     `Requisition type: ${lab('requisition_type', f.requisition_type)}`, `Employment type: ${lab('employment_type', f.employment_type)}`, `Vacancies: ${f.number_of_positions || 1}`,
-    `Experience: ${lab('experience_range', f.exp_min)}${f.exp_max && f.exp_max !== f.exp_min ? ' to ' + lab('experience_range', f.exp_max) : ''}`,
+    `Experience: ${VR.experienceText(f, masters)}`,
     `CTC: ${M.ctcLabel(f) || 'not specified'}`, `Location: ${M.locationLabel(f) || 'not specified'} (${f.work_arrangement || ''})`,
     `Qualification: ${(f.qualification || []).join(', ')}`, `Industry: ${(f.industry_experience || []).join(', ')}`,
     `Required skills: ${[...(f.required_skills || []), ...(f.technical_skills || [])].join(', ')}`, `Preferred skills: ${(f.preferred_skills || []).join(', ')}`,
@@ -205,9 +280,15 @@ const H = {
     const designations = [...desigSeen.values()].sort((a, b) => a.localeCompare(b));
     const me = P.empBy[cx.cu.id] || {};
     const creatorOnlyManager = hasAny(cx, ['manager']) && !hasAny(cx, ['hr', 'admin', 'management']);
-    return res.json({ success: true, masters, departments: deps, locations, designations,
+    const canCreate = hasAny(cx, CREATE_ROLES);
+    const config = await loadRulesConfig();
+    // "Replacement Of" must find anyone who ever held a role, including people who have left
+    const allEmployees = canCreate ? P.emps.map((e) => ({ user_id: e.user_id, name: e.display_name || P.name(e.user_id), code: e.employee_code || '', department: e.department || '', designation: e.designation || '', status: e.status || 'active', separated: GONE.includes(e.status) }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name))) : [];
+    return res.json({ success: true, masters, departments: deps, locations, designations, all_employees: allEmployees,
+      can_override: VR.canOverride(cx.roles, config), dept_head_approval: config.dept_head_approval, is_department_head: cx.headOf.size > 0, today: istToday(),
       employees: P.emps.filter((e) => !['resigned', 'terminated', 'retired'].includes(e.status)).map((e) => ({ user_id: e.user_id, name: e.display_name, code: e.employee_code, department: e.department, designation: e.designation })),
-      timeline: { min_days: 15, max_days: 45 }, can_create: hasAny(cx, CREATE_ROLES), is_hr: hasAny(cx, HR), is_publisher: hasAny(cx, PUBLISH_ROLES), is_org_wide: isOrgWide(cx),
+      timeline: VR.targetWindow(istToday()), can_create: canCreate, is_hr: hasAny(cx, HR), is_publisher: hasAny(cx, PUBLISH_ROLES), is_org_wide: isOrgWide(cx),
       me: { user_id: cx.cu.id, name: cx.name, department: me.department || '', designation: me.designation || '', reporting_manager_id: me.reporting_manager_id || '', reporting_manager_name: P.name(me.reporting_manager_id), locked_to_self: creatorOnlyManager } });
   },
 
@@ -274,14 +355,23 @@ const H = {
     }
     const me = P.empBy[cx.cu.id] || {};
     if (managerOnly) { form.department = me.department || form.department; form.hiring_manager_id = cx.cu.id; }
+    // the replaced person's name and ID always come from their record, never from what was typed
+    if (form.replaced_employee_user_id) {
+      const gone = P.empBy[form.replaced_employee_user_id];
+      if (!gone) return fail(res, 'The employee selected in “Replacement Of” was not found.');
+      form.replaced_employee_name = gone.display_name || P.name(gone.user_id); form.replaced_employee_code = gone.employee_code || '';
+    }
+    if (form.budget_status) form.budget_approved = form.budget_status !== 'non_budgeted';
     const merged = { ...(rec || {}), ...form };
     if (merged.hiring_manager_id && merged.department) {
       const bad = await checkHiringManager(merged.department, merged.hiring_manager_id, P);
       if (bad) return fail(res, bad);
     }
     if (form.hiring_manager_id && !form.reports_to_user_id && !merged.reports_to_user_id) form.reports_to_user_id = form.hiring_manager_id;
+    let unlock = null;
     if (!rec) {
-      const year = new Date().getFullYear();
+      unlock = await keyedLock('mrf:new-id');            // two people saving at once must never get the same MRF number
+      const year = Number(istToday().slice(0, 4));
       const id = uuidv4();
       rec = { id, mrf_version: 2, requisition_id: M.nextReqId((await allV2()).map((r) => r.requisition_id), year), requisition_date: istToday(), status: 'draft', requested_by: cx.cu.id, requested_by_role: cx.roles[0] || '',
         created_by_name: cx.name, jd_versions: [], jd_status: 'not_generated', audit: [], disclose_ctc: false, number_of_positions: 1, exp_mode: 'range' };
@@ -298,8 +388,60 @@ const H = {
     }
     Object.assign(rec, M.legacyMirror(rec, masters));
     rec.hiring_manager_name = P.name(rec.hiring_manager_id);
+    try { await save(rec, cx.cu.id); } finally { unlock?.(); }
+    return res.json({ success: true, requisition: view(rec, P, cx) });
+  },
+
+  // Live checks while the form is being filled: anomalies next to each field, and the allowed target-date window.
+  async mrf_validate({ p, cx, res }) {
+    let rec = p.id ? await load(p.id) : null;
+    if (rec && !canSee(rec, cx)) return fail(res, 'You do not have access to this requisition', 403);
+    if (!rec && !hasAny(cx, CREATE_ROLES)) return fail(res, 'Not allowed', 403);
+    const P = await people(); const masters = await loadMasters();
+    const form = { ...(rec || {}), ...M.cleanForm(p.form || {}) };
+    const { config, flags } = await flagsFor(form, rec, P, masters);
+    const today = istToday();
+    return res.json({ success: true, flags: forViewer(flags, cx), window: VR.targetWindow(today), can_override: VR.canOverride(cx.roles, config), override_roles: config.override_roles,
+      field_problems: { experience: VR.experienceProblem(form, masters), target_hire_date: form.target_hire_date ? VR.targetDateProblem(today, form.target_hire_date) : null } });
+  },
+
+  // An authorised person accepts a flagged exception, with the reason on record.
+  async mrf_override({ p, cx, res }) {
+    const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
+    const P = await people(); const masters = await loadMasters();
+    const { config, flags } = await flagsFor(rec, rec, P, masters);
+    if (!VR.canOverride(cx.roles, config)) return fail(res, `Only ${config.override_roles.join(' / ')} can override a validation flag.`, 403);
+    if (['closed', 'cancelled', 'rejected'].includes(rec.status)) return fail(res, 'This requisition is finished.');
+    const flag = flags.find((x) => x.key === p.key);
+    if (!flag) return fail(res, 'That flag no longer applies — reload the requisition.', 409);
+    if (flag.sensitive && !hasAny(cx, HR)) return fail(res, 'Only HR or admin can override this flag.', 403);
+    if (flag.severity === 'information') return fail(res, 'Information notes do not need an override.');
+    const bad = grantOverride(rec, cx, flag, p.justification); if (bad) return fail(res, bad);
+    const next = VR.applyOverrides(flags, rec.flag_overrides);
+    rec.validation = { ...(rec.validation || {}), at: nowIso(), flags: next };
+    if (!VR.blockingFlags(next).length) rec.exception_requested = null;
     await save(rec, cx.cu.id);
-    return res.json({ success: true, requisition: hydrate(rec, P) });
+    if (!isCreator(rec, cx)) await notify([rec.requested_by], { title: 'Requisition exception approved', message: `${cx.name} overrode “${flag.title}” on ${label(rec)}.${VR.blockingFlags(next).length ? '' : ' It no longer blocks submission.'}`, link: `/ManpowerRequisitions?open=${rec.id}` });
+    return res.json({ success: true, requisition: view(rec, P, cx), flags: forViewer(next, cx) });
+  },
+
+  // The creator cannot override a critical flag: ask the people who can.
+  async mrf_request_exception({ p, cx, res }) {
+    const rec = await load(p.id); if (!rec) return fail(res, 'Save the requisition first.', 404);
+    if (!isCreator(rec, cx)) return fail(res, 'Only the creator can ask for an exception.', 403);
+    if (!M.JD_EDITABLE_BY_CREATOR.includes(rec.status)) return fail(res, 'This requisition has already been submitted.');
+    const reason = String(p.reason || '').trim().slice(0, 1000);
+    if (reason.length < VR.MIN_JUSTIFICATION) return fail(res, 'Explain why this exception is needed.');
+    const P = await people(); const masters = await loadMasters();
+    const { config, flags } = await flagsFor(rec, rec, P, masters);
+    const blocking = VR.blockingFlags(flags);
+    if (!blocking.length) return fail(res, 'Nothing is blocking submission now.');
+    rec.exception_requested = { by: cx.cu.id, by_name: cx.name, at: nowIso(), reason };
+    rec.validation = { at: nowIso(), flags };
+    addAudit(rec, cx, 'exception_requested', `${blocking.map((x) => x.title).join(', ')} — ${reason}`);
+    await save(rec, cx.cu.id);
+    await notify(await overrideAudience(config), { title: 'Requisition exception needs approval', message: `${cx.name} asks for an exception on ${label(rec)}: ${blocking.map((x) => x.title).join(', ')}. Reason: ${reason}`, link: `/ManpowerRequisitions?open=${rec.id}`, type: 'warning' });
+    return res.json({ success: true, requisition: view(rec, P, cx) });
   },
 
   async mrf_submit({ p, cx, res }) {
@@ -307,16 +449,35 @@ const H = {
     if (!isCreator(rec, cx)) return fail(res, 'Only the creator can submit this requisition.', 403);
     if (!M.JD_EDITABLE_BY_CREATOR.includes(rec.status)) return fail(res, `This requisition is already ${rec.status.replace(/_/g, ' ')}.`);
     const masters = await loadMasters(); const P = await people();
-    const problems = M.submitProblems(rec, masters);
+    const problems = M.submitProblems(rec, masters, { submissionDate: istToday() });
+    if (rec.requisition_type === 'replacement' && rec.replaced_employee_user_id && !P.empBy[rec.replaced_employee_user_id]) problems.push('The employee selected in “Replacement Of” was not found');
     if (!String(rec.jd_current_text || '').trim()) problems.push('Generate the Job Description before submitting');
     if (problems.length) return res.json({ success: false, error: problems[0], errors: problems });
     const bad = await checkHiringManager(rec.department, rec.hiring_manager_id, P); if (bad) return fail(res, bad);
+    // anomalies: critical ones stop here unless an authorised person has accepted them, now or earlier
+    let { config, flags } = await flagsFor(rec, rec, P, masters);
+    for (const o of Array.isArray(p.overrides) ? p.overrides.slice(0, 30) : []) {
+      const flag = flags.find((x) => x.key === o?.key && !x.override);
+      if (!flag || flag.severity === 'information') continue;
+      if (!VR.canOverride(cx.roles, config) || (flag.sensitive && !hasAny(cx, HR))) return fail(res, `Only ${config.override_roles.join(' / ')} can override a validation flag.`, 403);
+      const err = grantOverride(rec, cx, flag, o.justification); if (err) return fail(res, err);
+    }
+    flags = VR.applyOverrides(flags, rec.flag_overrides || {});
+    const blocking = VR.blockingFlags(flags);
+    if (blocking.length) {
+      const errors = blocking.map((x) => `${x.title}: ${x.message}`);
+      return res.json({ success: false, blocked_by_flags: true, error: errors[0], errors: [...errors, VR.canOverride(cx.roles, config) ? 'Correct the values, or override each critical item with a justification.' : 'Correct the values, or ask HR to approve an exception.'], flags: forViewer(flags, cx), can_override: VR.canOverride(cx.roles, config) });
+    }
     await rememberDesignation(rec.designation);
-    rec.status = 'pending_hm_approval'; rec.submitted_at = nowIso(); rec.jd_status = 'draft'; rec.changes_request = null;
+    rec.status = 'pending_hm_approval'; rec.submitted_at = nowIso(); rec.jd_status = 'draft'; rec.changes_request = null; rec.exception_requested = null; rec.dh_approval = null;
+    rec.validation = { at: rec.submitted_at, flags };
+    const warn = flags.filter((x) => x.severity !== 'information' && !x.override);
+    if (warn.length) addAudit(rec, cx, 'validation_flags', `${warn.length} warning(s) for HR review: ${warn.map((x) => x.title).join(', ')}`);
     addAudit(rec, cx, 'submitted', `Submitted for Hiring Manager approval (${P.name(rec.hiring_manager_id)})`);
     await save(rec, cx.cu.id);
     if (!isHm(rec, cx)) await notify([rec.hiring_manager_id], { title: 'Job Description needs your approval', message: `${cx.name} raised ${label(rec)} and you are the Hiring Manager. Please review and approve the Job Description.`, type: 'warning' });
-    return res.json({ success: true, requisition: hydrate(rec, P) });
+    if (warn.length) await notify(await hrAudience(), { title: 'Requisition submitted with warnings', message: `${label(rec)}: ${warn.map((x) => x.title).join(', ')}. Please review.`, link: `/ManpowerRequisitions?open=${rec.id}`, type: 'warning', email: false });
+    return res.json({ success: true, requisition: view(rec, P, cx) });
   },
 
   // ── AI ──
@@ -366,19 +527,19 @@ const H = {
     if (r.error) return fail(res, r.error, 403);
     rec.jd_status = rec.approved_jd ? 'approved' : 'draft';
     await save(rec, cx.cu.id);
-    return res.json({ success: true, text, version: r.version, source, note, invalidated: r.invalidated, requisition: hydrate(rec, P) });
+    return res.json({ success: true, text, version: r.version, source, note, invalidated: r.invalidated, requisition: view(rec, P, cx) });
   },
 
   async mrf_jd_save({ p, cx, res }) {
     const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
     const text = String(p.text || '').trim(); if (!text) return fail(res, 'The Job Description cannot be empty');
     if (text.length > 20000) return fail(res, 'The Job Description is too long');
-    if (text === (rec.jd_current_text || '').trim()) return res.json({ success: true, unchanged: true, requisition: hydrate(rec, await people()) });
+    if (text === (rec.jd_current_text || '').trim()) return res.json({ success: true, unchanged: true, requisition: view(rec, await people(), cx) });
     const r = applyJd(rec, cx, text, 'manual', 'edit', String(p.note || '').slice(0, 300));
     if (r.error) return fail(res, r.error, 403);
     await save(rec, cx.cu.id);
     if (r.invalidated) await notify(await hrAudience(), { title: 'JD changed — approval voided', message: `The Hiring Manager changed the approved JD of ${label(rec)}. It is no longer published until they approve it again.`, type: 'warning' });
-    return res.json({ success: true, version: r.version, invalidated: r.invalidated, requisition: hydrate(rec, await people()) });
+    return res.json({ success: true, version: r.version, invalidated: r.invalidated, requisition: view(rec, await people(), cx) });
   },
 
   // ── the Hiring Manager's decision — nobody else can make it ──
@@ -397,8 +558,10 @@ const H = {
       rec.jd_status = 'approved'; rec.jd_approved_by = cx.cu.id; rec.jd_approved_date = rec.approved_jd.approved_at; rec.ai_job_description = v.text;
       rec.status = 'pending_hr_publication'; rec.hm_approved_at = rec.approved_jd.approved_at; rec.hm_comment = comment; rec.unpublished_reason = '';
       addAudit(rec, cx, 'jd_approved', `Approved version ${v.version}${comment ? ' — ' + comment : ''}`, { version: v.version, hash: v.hash });
+      const head = await startDeptHeadApproval(rec, await loadRulesConfig());
       await save(rec, cx.cu.id);
-      await notify(await hrAudience(), { title: 'Requisition ready to publish', message: `${cx.name} approved the Job Description for ${label(rec)}. It is waiting for HR publication.`, type: 'success' });
+      if (head) await notify([head], { title: 'Requisition needs your approval', message: `${label(rec)} was approved by the Hiring Manager and needs your approval as Department Head.`, link: `/ManpowerRequisitions?open=${rec.id}`, type: 'warning' });
+      await notify(await hrAudience(), { title: rec.dh_approval?.status === 'pending' ? 'Requisition awaiting Department Head' : 'Requisition ready to publish', message: `${cx.name} approved the Job Description for ${label(rec)}. ${rec.dh_approval?.status === 'pending' ? 'The Department Head has to approve it before publication.' : 'It is waiting for HR publication.'}`, type: 'success' });
       if (!isCreator(rec, cx)) await notify([rec.requested_by], { title: 'Requisition approved', message: `${label(rec)} was approved by the Hiring Manager and is now with HR for publication.`, type: 'success' });
     } else if (action === 'request_changes') {
       if (!comment) return fail(res, 'Tell the creator what to change.');
@@ -413,7 +576,7 @@ const H = {
       await save(rec, cx.cu.id);
       await notify([rec.requested_by, ...(await hrAudience())], { title: 'Requisition rejected', message: `${label(rec)} was rejected by the Hiring Manager: ${comment}`, type: 'error' });
     } else return fail(res, 'Unknown action');
-    return res.json({ success: true, requisition: hydrate(rec, P) });
+    return res.json({ success: true, requisition: view(rec, P, cx) });
   },
 
   // ── HR: publication and logistics. Never the JD. ──
@@ -426,6 +589,11 @@ const H = {
       if (!['pending_hr_publication', 'on_hold'].includes(rec.status)) return fail(res, 'Only an approved requisition can be published.');
       if (!rec.approved_jd) return fail(res, 'The Job Description is not approved — the Hiring Manager must approve it before publication.');
       if (rec.hm_approved_at == null) return fail(res, 'Hiring Manager approval is missing.');
+      const rules = await loadRulesConfig();
+      if (VR.needsDeptHeadApproval(rec, rules) && !deptHeadCleared(rec)) {
+        if (rec.dh_approval?.status !== 'pending' || rec.dh_approval.jd_version !== rec.approved_jd.version) { const head = await startDeptHeadApproval(rec, rules); await save(rec, cx.cu.id); if (head) await notify([head], { title: 'Requisition needs your approval', message: `${label(rec)} needs your approval as Department Head.`, link: `/ManpowerRequisitions?open=${rec.id}`, type: 'warning' }); }
+        if (!deptHeadCleared(rec)) return fail(res, rec.dh_approval.head_user_id ? `The Department Head (${P.name(rec.dh_approval.head_user_id)}) has to approve this requisition before it can be published.` : `No Department Head is set for ${rec.department}. An admin can record the approval.`);
+      }
       const channels = Array.isArray(p.channels) ? p.channels.map((c) => String(c).slice(0, 60)).filter(Boolean).slice(0, 12) : ['Careers page'];
       rec.status = 'published'; rec.is_published = true; rec.published_date = nowIso(); rec.published_by = cx.cu.id; rec.publish_channels = channels.length ? channels : ['Careers page'];
       rec.application_deadline = /^\d{4}-\d{2}-\d{2}$/.test(p.application_deadline || '') ? new Date(p.application_deadline).toISOString() : null;
@@ -447,7 +615,7 @@ const H = {
       await save(rec, cx.cu.id);
       await notify(toHm ? [rec.hiring_manager_id] : [rec.requested_by, ...(rec.requested_by === rec.hiring_manager_id ? [] : [rec.hiring_manager_id])], { title: 'HR returned a requisition', message: `${label(rec)}: ${comment}`, type: 'warning' });
     } else return fail(res, 'Unknown action');
-    return res.json({ success: true, requisition: hydrate(rec, P) });
+    return res.json({ success: true, requisition: view(rec, P, cx) });
   },
 
   // hold / resume / filled / close / cancel (HR; the creator may withdraw their own requisition before it is published)
@@ -458,7 +626,30 @@ const H = {
     const withdraw = to === 'cancelled' && isCreator(rec, cx) && ['draft', 'pending_hm_approval', 'changes_requested'].includes(rec.status);
     if (!hr && !withdraw) return fail(res, 'Only HR can change the status of a requisition.', 403);
     const P = await people(); const before = rec.status;
-    if (to === 'on_hold') { if (!['published', 'pending_hr_publication'].includes(rec.status)) return fail(res, 'Only an approved or published requisition can be put on hold.'); rec.status_before_hold = rec.status; rec.status = 'on_hold'; rec.is_published = false; }
+    if (to === 'reopen') {
+      if (!['closed', 'cancelled', 'rejected'].includes(rec.status)) return fail(res, 'Only a closed, cancelled or rejected requisition can be reopened.');
+      if (reason.length < 3) return fail(res, 'Give a reason for reopening.');
+      const total = Number(rec.number_of_positions) || 1, done = Number(rec.positions_filled) || 0;
+      let added = Math.floor(Number(p.count) || 0);
+      if (done >= total && added < 1) return fail(res, 'Every position is filled — say how many positions to add.');
+      added = Math.max(0, Math.min(500, added));
+      rec.reopen_history = [...(rec.reopen_history || []), { at: nowIso(), by: cx.cu.id, by_name: cx.name, from: before, closed_at: rec.closed_at || null, closed_reason: rec.closed_reason || null, cancelled_at: rec.cancelled_at || null, reason: reason || rec.cancel_reason || '', positions_added: added }];
+      rec.number_of_positions = total + added; rec.reopened_at = nowIso();
+      rec.status = rec.approved_jd ? 'pending_hr_publication' : 'changes_requested'; rec.is_published = false;
+      if (!rec.approved_jd) rec.changes_request = { by: cx.cu.id, by_name: cx.name, comment: `Reopened: ${reason}. Check the details (the target date must be 15–45 days from resubmission) and submit again.`, at: nowIso(), from: 'hr', to: 'creator' };
+      delete rec.closed_at; delete rec.closed_reason; delete rec.cancelled_at; delete rec.cancel_reason;
+      if (rec.closed_date_source !== 'recorded') delete rec.closed_date;
+    }
+    else if (to === 'withdraw_positions') {
+      if (!['published', 'on_hold', 'pending_hr_publication'].includes(rec.status)) return fail(res, 'Positions can only be withdrawn from an approved requisition.');
+      if (reason.length < 3) return fail(res, 'Give a reason for withdrawing positions.');
+      const total = Number(rec.number_of_positions) || 1, done = Number(rec.positions_filled) || 0, n = Math.floor(Number(p.count) || 0);
+      const most = total - Math.max(1, done);
+      if (n < 1 || n > most) return fail(res, most > 0 ? `You can withdraw 1 to ${most} position(s).` : 'To withdraw the last open position, cancel the requisition (or close it if the others are filled).');
+      rec.number_of_positions = total - n; rec.positions_withdrawn = (Number(rec.positions_withdrawn) || 0) + n;
+      if (done >= rec.number_of_positions) { rec.status = 'closed'; rec.closed_reason = 'filled'; rec.closed_at = nowIso(); rec.is_published = false; }
+    }
+    else if (to === 'on_hold') { if (!['published', 'pending_hr_publication'].includes(rec.status)) return fail(res, 'Only an approved or published requisition can be put on hold.'); rec.status_before_hold = rec.status; rec.status = 'on_hold'; rec.is_published = false; }
     else if (to === 'resume') { if (rec.status !== 'on_hold') return fail(res, 'This requisition is not on hold.'); rec.status = rec.status_before_hold === 'published' ? 'published' : 'pending_hr_publication'; rec.is_published = rec.status === 'published'; }
     else if (to === 'filled' && Number(rec.number_of_positions) > 1 && !p.all) {
       if (!['published', 'on_hold', 'pending_hr_publication'].includes(rec.status)) return fail(res, 'This requisition cannot be closed now.');
@@ -472,9 +663,9 @@ const H = {
     else return fail(res, 'Unknown status');
     addAudit(rec, cx, `status_${to}`, `${before} → ${rec.status}${to === 'filled' ? ` (${rec.positions_filled || 0}/${rec.number_of_positions} filled)` : ''}${reason ? ' — ' + reason : ''}`);
     await save(rec, cx.cu.id);
-    const word = { on_hold: 'put on hold', resume: 'resumed', filled: rec.status === 'closed' ? 'marked as filled' : `updated — ${rec.positions_filled} of ${rec.number_of_positions} positions filled`, closed: 'closed', cancelled: 'cancelled' }[to];
+    const word = { reopen: 'reopened', withdraw_positions: `reduced to ${rec.number_of_positions} position(s)`, on_hold: 'put on hold', resume: 'resumed', filled: rec.status === 'closed' ? 'marked as filled' : `updated — ${rec.positions_filled} of ${rec.number_of_positions} positions filled`, closed: 'closed', cancelled: 'cancelled' }[to];
     await notify([rec.requested_by, rec.hiring_manager_id, ...(to === 'cancelled' ? await hrAudience() : [])], { title: `Requisition ${word}`, message: `${label(rec)} was ${word} by ${cx.name}${reason ? ': ' + reason : '.'}`, type: to === 'filled' ? 'success' : 'info' });
-    return res.json({ success: true, requisition: hydrate(rec, P) });
+    return res.json({ success: true, requisition: view(rec, P, cx) });
   },
 
   // The named Hiring Manager left or moved: HR / admin / management can name another one while the JD is not yet approved.
@@ -490,7 +681,73 @@ const H = {
     await save(rec, cx.cu.id);
     await notify([p.hiring_manager_id], { title: rec.status === 'pending_hm_approval' ? 'Job Description needs your approval' : 'You are now the Hiring Manager', message: `${cx.name} named you Hiring Manager for ${label(rec)}.`, type: 'warning' });
     await notify([old, rec.requested_by], { title: 'Hiring Manager changed', message: `${label(rec)}: new Hiring Manager is ${P.name(p.hiring_manager_id)}.`, email: false });
-    return res.json({ success: true, requisition: hydrate(rec, P) });
+    return res.json({ success: true, requisition: view(rec, P, cx) });
+  },
+
+  // Department Head step (only when the validation rules ask for it).
+  async mrf_dh_decide({ p, cx, res }) {
+    const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
+    if (rec.status !== 'pending_hr_publication' || rec.dh_approval?.status !== 'pending') return fail(res, 'There is no Department Head approval waiting on this requisition.');
+    const head = await deptHeadOf(rec.department);
+    if (!(head ? head === cx.cu.id : hasAny(cx, ['admin']))) return fail(res, head ? 'Only the Department Head can decide this.' : 'No Department Head is set — only an admin can record this approval.', 403);
+    const comment = String(p.comment || '').trim().slice(0, 1000);
+    if (p.action === 'approve') {
+      rec.dh_approval = { ...rec.dh_approval, status: 'approved', head_user_id: head, jd_version: rec.approved_jd?.version || null, by: cx.cu.id, by_name: cx.name, at: nowIso(), comment };
+      addAudit(rec, cx, 'department_head_approved', comment || 'Approved by the Department Head');
+      await save(rec, cx.cu.id);
+      await notify([...(await hrAudience()), rec.requested_by], { title: 'Department Head approved', message: `${cx.name} approved ${label(rec)}. HR can publish it.`, type: 'success' });
+    } else if (p.action === 'send_back') {
+      if (!comment) return fail(res, 'Say what needs to change.');
+      rec.jd_approval_history = [...(rec.jd_approval_history || []), { ...rec.approved_jd, voided_at: nowIso(), voided_by: cx.cu.id, voided_by_name: cx.name, voided_reason: `Sent back by the Department Head: ${comment}` }];
+      rec.approved_jd = null; rec.jd_status = 'draft'; rec.dh_approval = null; rec.status = 'changes_requested';
+      rec.changes_request = { by: cx.cu.id, by_name: cx.name, comment, at: nowIso(), from: 'department_head', to: 'creator' };
+      addAudit(rec, cx, 'department_head_sent_back', comment);
+      await save(rec, cx.cu.id);
+      await notify([rec.requested_by, rec.hiring_manager_id, ...(await hrAudience())], { title: 'Department Head sent a requisition back', message: `${label(rec)}: ${comment}`, type: 'warning' });
+    } else return fail(res, 'Unknown action');
+    return res.json({ success: true, requisition: view(rec, await people(), cx) });
+  },
+
+  async mrf_comment({ p, cx, res }) {
+    const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
+    if (!canSee(rec, cx)) return fail(res, 'You do not have access to this requisition', 403);
+    const text = String(p.text || '').trim().slice(0, 1000); if (text.length < 2) return fail(res, 'Write the comment.');
+    addAudit(rec, cx, 'comment', text);
+    await save(rec, cx.cu.id);
+    await notify([rec.requested_by, rec.hiring_manager_id].filter((x) => x !== cx.cu.id), { title: 'Comment on a requisition', message: `${cx.name} on ${label(rec)}: ${text}`, link: `/ManpowerRequisitions?open=${rec.id}`, email: false });
+    return res.json({ success: true, requisition: view(rec, await people(), cx) });
+  },
+
+  async mrf_assign_recruiter({ p, cx, res }) {
+    if (!hasAny(cx, HR)) return fail(res, 'Only HR or admin can assign a recruiter.', 403);
+    const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
+    const P = await people(); const id = String(p.recruiter_id || '');
+    if (id && !roleList(P.byUser[id]).some((r) => PUBLISH_ROLES.includes(r))) return fail(res, 'Choose a person with an HR or recruiter role.');
+    const old = rec.recruiter_id;
+    rec.recruiter_id = id;
+    addAudit(rec, cx, 'recruiter_assigned', `${P.name(old) || '—'} → ${P.name(id) || '—'}`);
+    await save(rec, cx.cu.id);
+    if (id && id !== cx.cu.id) await notify([id], { title: 'Requisition assigned to you', message: `${cx.name} assigned ${label(rec)} to you.`, link: `/ManpowerRequisitions?open=${rec.id}` });
+    return res.json({ success: true, requisition: view(rec, P, cx) });
+  },
+
+  async mrf_rules_get({ cx, res }) {
+    if (!hasAny(cx, HR)) return fail(res, 'HR or admin access required', 403);
+    const masters = await loadMasters();
+    return res.json({ success: true, config: await loadRulesConfig(), rules: VR.RULES, sla_labels: VR.SLA_LABELS, tiers: (masters.position_tier || []).map((m) => ({ value: m.value, label: m.label })), dept_head_modes: VR.DH_APPROVAL_MODES });
+  },
+  async mrf_rules_save({ p, cx, res }) {
+    if (!hasAny(cx, HR)) return fail(res, 'HR or admin access required', 403);
+    const problems = VR.configProblems(p.config); if (problems.length) return res.json({ success: false, error: problems[0], errors: problems });
+    const before = await loadRulesConfig();
+    const config = VR.normalizeConfig({ ...before, ...(p.config || {}) });
+    const old = jparse((await one("SELECT data FROM entities WHERE type=$1 AND id=$2", [CFG_TYPE, CFG_ID]))?.data) || {};
+    const changed = Object.keys(config).filter((k) => JSON.stringify(config[k]) !== JSON.stringify(before[k]));
+    const data = { id: CFG_ID, ...config, history: [...(old.history || []), { at: nowIso(), by: cx.cu.id, by_name: cx.name, changed, previous: Object.fromEntries(changed.map((k) => [k, before[k]])) }].slice(-100) };
+    const have = await one("SELECT id FROM entities WHERE type=$1 AND id=$2", [CFG_TYPE, CFG_ID]);
+    if (have) await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(data), CFG_ID]);
+    else await run("INSERT INTO entities(id,type,status,is_active,data) VALUES($1,$2,'active',1,$3)", [CFG_ID, CFG_TYPE, JSON.stringify(data)]);
+    return res.json({ success: true, config: await loadRulesConfig() });
   },
 
   // Where the hiring stands: candidates linked to this requisition, by stage.
@@ -499,7 +756,7 @@ const H = {
     if (!canSee(rec, cx)) return fail(res, 'You do not have access to this requisition', 403);
     const STAGES = ['applied', 'screening', 'shortlisted', 'cv_sent', 'interview_recommended', 'interview_scheduled', 'interviewed', 'next_round_recommended', 'selected', 'offer_in_progress', 'offered', 'offer_accepted', 'joined', 'on_hold', 'rejected', 'offer_declined', 'withdrawn'];
     const by = {}; let total = 0;
-    for (const r of await all("SELECT data FROM entities WHERE type='Candidate'")) { const c = jparse(r.data); if (!c || (c.requisition_id !== rec.id && c.job_id !== rec.id)) continue; total++; by[c.status || 'applied'] = (by[c.status || 'applied'] || 0) + 1; }
+    for (const r of await all("SELECT data FROM entities WHERE type='Candidate'")) { const c = jparse(r.data); if (!c || (c.requisition_id || c.job_requisition_id || c.job_id) !== rec.id) continue; total++; by[c.status || 'applied'] = (by[c.status || 'applied'] || 0) + 1; }
     return res.json({ success: true, total, by_stage: STAGES.filter((k) => by[k]).map((k) => ({ stage: k, count: by[k] })), positions: Number(rec.number_of_positions) || 1, filled: Number(rec.positions_filled) || 0 });
   },
 
@@ -509,14 +766,20 @@ const H = {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date || '')) return fail(res, 'Choose a date');
     const old = rec.target_hire_date; rec.target_hire_date = p.date; rec.target_hire_date_reminded = null;
     addAudit(rec, cx, 'target_date_changed', `${old || '—'} → ${p.date}${p.note ? ' — ' + p.note : ''}`); await save(rec, cx.cu.id);
-    return res.json({ success: true, requisition: hydrate(rec, await people()) });
+    return res.json({ success: true, requisition: view(rec, await people(), cx) });
   },
 
   async mrf_get({ p, cx, res }) {
     const rec = await load(p.id); if (!rec) return fail(res, 'Requisition not found', 404);
     if (!canSee(rec, cx)) return fail(res, 'You do not have access to this requisition', 403);
     const P = await people();
-    const out = hydrate(rec, P);
+    const out = view(rec, P, cx);
+    const rules = await loadRulesConfig(); const head = await deptHeadOf(rec.department);
+    // a draft or returned form shows the checks as they stand now; later stages keep what was recorded
+    if (['draft', 'changes_requested', 'pending_hm_approval', 'pending_hr_publication'].includes(rec.status)) out.live_flags = forViewer((await flagsFor(rec, rec, P, await loadMasters())).flags, cx);
+    out.department_head_name = P.name(head); out.recruiter_name = P.name(rec.recruiter_id);
+    out.dh_required = VR.needsDeptHeadApproval(rec, rules);
+    if (hasAny(cx, HR)) out.recruiter_options = Object.values(P.byUser).filter((u) => roleList(u).some((r) => PUBLISH_ROLES.includes(r)) && !String(u.email || '').includes('.disabled-')).map((u) => ({ user_id: u.id, name: P.name(u.id) })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
     out.applications = (await applicationCounts())[rec.id] || 0;
     out.permissions = {
       creator: isCreator(rec, cx), hiring_manager: isHm(rec, cx), publisher: hasAny(cx, PUBLISH_ROLES), hr: hasAny(cx, HR),
@@ -525,61 +788,48 @@ const H = {
       can_generate_jd: (isHm(rec, cx) || (isCreator(rec, cx) && M.JD_EDITABLE_BY_CREATOR.includes(rec.status))) && !['closed', 'cancelled', 'rejected'].includes(rec.status),
       can_decide: isHm(rec, cx) && rec.status === 'pending_hm_approval',
       can_reassign_hm: hasAny(cx, ['hr', 'admin', 'management']) && ['draft', 'changes_requested', 'pending_hm_approval'].includes(rec.status),
+      can_override: VR.canOverride(cx.roles, rules),
+      can_dh_decide: rec.status === 'pending_hr_publication' && rec.dh_approval?.status === 'pending' && (head ? head === cx.cu.id : hasAny(cx, ['admin'])),
     };
     return res.json({ success: true, requisition: out });
   },
 
-  // ── dashboard ──
-  async mrf_dashboard({ p, cx, res }) {
-    if (!isOrgWide(cx)) return fail(res, 'HR, admin or management access required', 403);
-    const P = await people();
-    const f = p.filters || {};
-    const today = istToday();
-    let rows = await allV2();
-    const inList = (v, want) => !want || want === 'all' || (Array.isArray(want) ? want.includes(v) : v === want);
-    rows = rows.filter((r) => inList(r.department, f.department) && inList(r.hiring_manager_id, f.hiring_manager_id) && inList(r.position_tier, f.position_tier) && inList(r.designation, f.designation)
-      && inList(r.priority, f.priority) && inList(r.requisition_type, f.requisition_type) && inList(r.employment_type, f.employment_type) && inList(r.status, f.status)
-      && (!f.location || String(M.locationLabel(r)).toLowerCase().includes(String(f.location).toLowerCase()))
-      && (!f.req_from || r.requisition_date >= f.req_from) && (!f.req_to || r.requisition_date <= f.req_to)
-      && (!f.target_from || (r.target_hire_date && r.target_hire_date >= f.target_from)) && (!f.target_to || (r.target_hire_date && r.target_hire_date <= f.target_to)));
-    const count = (st) => rows.filter((r) => st.includes(r.status)).length;
-    const days = (a, b) => (a && b ? (Date.parse(b) - Date.parse(a)) / 86400000 : null);
-    const avg = (xs) => { const v = xs.filter((x) => x != null && x >= 0); return v.length ? Math.round((v.reduce((s, x) => s + x, 0) / v.length) * 10) / 10 : null; };
-    const open = rows.filter((r) => ['pending_hm_approval', 'changes_requested', 'pending_hr_publication', 'published', 'on_hold'].includes(r.status));
-    const overdue = rows.filter((r) => r.target_hire_date && r.target_hire_date < today && ['pending_hm_approval', 'changes_requested', 'pending_hr_publication', 'published', 'on_hold'].includes(r.status));
-    const group = (key, valueOf = (r) => r[key]) => { const m = {}; for (const r of rows) { const k = valueOf(r) || '—'; m[k] = (m[k] || 0) + (Number(r.number_of_positions) || 1); } return Object.entries(m).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value); };
-    const apps = await applicationCounts();
-    const masters = await loadMasters(true);
-    const lab = (kind, v) => (masters[kind] || []).find((m) => m.value === v)?.label || v;
-    const age = (r) => Math.round(days(r.requisition_date, today) ?? 0);
-    const buckets = [['0–15 days', 0, 15], ['16–30 days', 16, 30], ['31–60 days', 31, 60], ['Over 60 days', 61, 99999]].map(([name, lo, hi]) => ({ name, value: open.filter((r) => age(r) >= lo && age(r) <= hi).length }));
-    const pendingByHm = {}; for (const r of rows.filter((x) => x.status === 'pending_hm_approval')) pendingByHm[r.hiring_manager_id] = (pendingByHm[r.hiring_manager_id] || 0) + 1;
-    const closedFilled = rows.filter((r) => r.closed_reason === 'filled' && r.closed_at && r.target_hire_date);
-    return res.json({ success: true,
-      counts: { total: rows.length, draft: count(['draft']), pending_jd_approval: count(['pending_hm_approval', 'changes_requested']),
-        approved: rows.filter((r) => !!r.approved_jd || (r.status === 'closed' && !!r.hm_approved_at)).length,
-        pending_hr_publication: count(['pending_hr_publication']), published: count(['published']),
-        active_hiring: rows.filter((r) => r.status === 'published' && (apps[r.id] || 0) > 0).length,
-        filled: rows.filter((r) => r.closed_reason === 'filled').length, positions_filled: rows.reduce((sum, r) => sum + (Number(r.positions_filled) || 0), 0),
-        vacancies_open: open.reduce((sum, r) => sum + Math.max(0, (Number(r.number_of_positions) || 1) - (Number(r.positions_filled) || 0)), 0),
-        on_hold: count(['on_hold']), cancelled: count(['cancelled', 'rejected']), overdue: overdue.length },
-      analytics: {
-        by_department: group('department'), by_tier: group('position_tier', (r) => (r.position_tier === 'other_custom' ? r.position_tier_custom : lab('position_tier', r.position_tier))),
-        new_vs_replacement: group('requisition_type', (r) => lab('requisition_type', r.requisition_type)),
-        avg_jd_approval_days: avg(rows.map((r) => days(r.submitted_at, r.hm_approved_at))), avg_publication_days: avg(rows.map((r) => days(r.hm_approved_at, r.published_date))),
-        target_vs_actual_days: avg(closedFilled.map((r) => days(r.target_hire_date, r.closed_at.slice(0, 10)))), ageing: buckets,
-        pending_by_hiring_manager: Object.entries(pendingByHm).map(([id, value]) => ({ name: P.name(id) || id, value })).sort((a, b) => b.value - a.value),
-      },
-      requisitions: rows.map((r) => ({ ...summary(r, P), age_days: age(r), overdue: overdue.includes(r), applications: apps[r.id] || 0 })).sort((a, b) => String(b.requisition_date).localeCompare(String(a.requisition_date))).slice(0, 500) });
+  // ── Recruitment MIS: matrix, funnel, KPIs, bottlenecks and comparisons, all computed from the live records ──
+  async mrf_mis({ p, cx, res }) {
+    const out = await misFor(p, cx);
+    if (!out) return fail(res, 'You do not have any requisitions to report on', 403);
+    return res.json({ success: true, ...out });
+  },
+  async mrf_mis_export({ p, cx, res }) {
+    const out = await misFor(p, cx);
+    if (!out) return fail(res, 'You do not have any requisitions to report on', 403);
+    const used = Object.entries(p.filters || {}).filter(([, v]) => v && v !== 'all').map(([k, v]) => `${k.replace(/_/g, ' ')}: ${Object.values(out.options).flat().find((o) => o?.value === v)?.label || v}`);
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = await buildMrfMisWorkbook(out, ExcelJS, { subtitle: [used.length ? used.join(' · ') : 'All requisitions', out.org_wide ? '' : `your requisitions only (${cx.name})`].filter(Boolean).join(' · ') });
+    const buffer = await wb.xlsx.writeBuffer();
+    return res.json({ success: true, base64: Buffer.from(buffer).toString('base64'), filename: `MRF_Recruitment_MIS_${out.today}.xlsx`, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   },
 };
+
+/** HR, admin, management and recruiters see everything; others only the requisitions they raised, manage or head. */
+async function misFor(p, cx) {
+  const D = await loadHiringData();
+  const orgWide = isOrgWide(cx);
+  const scope = orgWide ? { all: true } : { user_id: cx.cu.id, departments: [...cx.headOf] };
+  if (!orgWide && !cx.headOf.size && !D.reqs.some((r) => r.requested_by === cx.cu.id || r.hiring_manager_id === cx.cu.id)) return null;
+  const users = await all("SELECT id, full_name, email FROM users");
+  const config = await loadRulesConfig();
+  const out = computeMrfMis(D, { filters: p.filters || {}, scope, sla: config.sla, masters: await loadMasters(true), userNames: Object.fromEntries(users.map((u) => [u.id, u.full_name || u.email])) });
+  return { ...out, org_wide: orgWide };
+}
 
 export async function handleMrf(name, p, cu, res) {
   if (!cu) return fail(res, 'Unauthorized', 401);
   const u = await one('SELECT role, custom_role, full_name, email FROM users WHERE id=$1', [cu.id]);
   if (!u) return fail(res, 'Unauthorized', 401);
   const P = await people();
-  const cx = { cu, roles: roleList(u), name: P.name(cu.id) || u.full_name || u.email || '' };
+  const headOf = new Set((await departments()).filter((d) => d.head_user_id === cu.id).map((d) => d.name));
+  const cx = { cu, roles: roleList(u), name: P.name(cu.id) || u.full_name || u.email || '', headOf };
   const fn = H[name];
   if (!fn) return fail(res, `Unknown function ${name}`, 404);
   try { return await fn({ p: p || {}, cx, res }); }
@@ -636,7 +886,11 @@ export async function publicJobSafe(j) {
  * candidate). When every vacancy is filled the requisition closes as filled and comes off the job portal.
  */
 export async function mrfCandidateJoined(c, byUserId) {
-  const rid = c?.requisition_id || c?.job_id; if (!rid) return null;
+  const rid = c?.requisition_id || c?.job_requisition_id || c?.job_id; if (!rid) return null;
+  const unlock = await keyedLock(`mrf:join:${rid}`);
+  try { return await countJoined(rid, c, byUserId); } finally { unlock(); }
+}
+async function countJoined(rid, c, byUserId) {
   const rec = await load(rid); if (!rec) return null;
   if ((rec.counted_candidates || []).includes(c.id)) return null;
   const sys = { cu: { id: byUserId || null }, name: 'Recruitment', roles: ['system'] };

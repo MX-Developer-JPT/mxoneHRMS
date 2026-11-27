@@ -1,6 +1,6 @@
 // MRF pure rules. Run: node backend/tests/mrf.test.mjs
 import assert from 'node:assert/strict';
-import { normalizeJdText, jdLooksComplete, cleanForm, submitProblems, timelineHint, isMaterialJdChange, templateJd, fallbackKeywords, canTransition, nextReqId, legacyMirror, DEFAULT_MASTERS } from '../utils/mrf.js';
+import { normalizeJdText, jdLooksComplete, cleanForm, submitProblems, isMaterialJdChange, templateJd, fallbackKeywords, canTransition, nextReqId, legacyMirror, DEFAULT_MASTERS } from '../utils/mrf.js';
 let n = 0; const t = (name, fn) => { fn(); n++; console.log('ok  ', name); };
 const masters = { experience_range: DEFAULT_MASTERS.experience_range };
 t('tags are de-duplicated case-insensitively and numbers/dates sanitised', () => {
@@ -8,16 +8,18 @@ t('tags are de-duplicated case-insensitively and numbers/dates sanitised', () =>
   assert.deepEqual(f.required_skills, ['React', 'Node']); assert.equal(f.number_of_positions, 3); assert.equal(f.ctc_min, null); assert.equal(f.target_hire_date, ''); assert.ok(!('hack' in f));
 });
 t('submission checks the essentials, replacement fields and experience / CTC order', () => {
-  const ok = { requisition_type: 'new_position', department: 'Sales', designation: 'BDE', position_tier: 'executive', number_of_positions: 1, hiring_manager_id: 'u', employment_type: 'full_time', priority: 'high', work_arrangement: 'on_site', work_location: 'Noida', position_overview: 'x' };
+  const ok = { budget_status: 'budgeted', exp_min_years: 1, exp_max_years: 2, requisition_type: 'new_position', department: 'Sales', designation: 'BDE', position_tier: 'executive', number_of_positions: 1, hiring_manager_id: 'u', employment_type: 'full_time', priority: 'high', work_arrangement: 'on_site', work_location: 'Noida', position_overview: 'x' };
   assert.deepEqual(submitProblems(ok, masters), []);
   assert.ok(submitProblems({ ...ok, requisition_type: 'replacement' }, masters).some(e => /replaced/i.test(e)));
-  assert.ok(submitProblems({ ...ok, exp_min: '5_7', exp_max: '3_5' }, masters).some(e => /experience/i.test(e)));
+  assert.ok(submitProblems({ ...ok, exp_min_years: 3, exp_max_years: 1 }, masters).some(e => /experience/i.test(e)));
+  assert.ok(submitProblems({ ...ok, exp_min_years: null, exp_max_years: null }, masters).some(e => /Experience range is required/.test(e)));
+  assert.match(submitProblems({ ...ok, budget_status: '' }, masters)[0], /Budget status/, 'budget status is asked first');
+  assert.deepEqual(submitProblems({ ...ok, requisition_type: 'replacement', replaced_employee_user_id: 'u2', replacement_reason: 'Resigned' }, masters), []);
+  assert.ok(submitProblems({ ...ok, requisition_type: 'replacement', replaced_employee_name: 'typed only', replacement_reason: 'x' }, masters).some(e => /Replacement Of/.test(e)), 'a typed name is not enough');
+  assert.ok(submitProblems({ ...ok, target_hire_date: '2026-11-05' }, masters, { submissionDate: '2026-11-01' }).some(e => /too early/.test(e)));
+  assert.deepEqual(submitProblems({ ...ok, target_hire_date: '2026-11-20' }, masters, { submissionDate: '2026-11-01' }), []);
   assert.ok(submitProblems({ ...ok, ctc_min: 9, ctc_max: 5 }, masters).some(e => /CTC/.test(e)));
-  assert.equal(submitProblems({ ...ok, exp_min: '3_5', exp_max: '5_7', is_remote: true, work_location: '', remote_region: 'pan_india' }, masters).length, 0, 'custom / remote locations are accepted');
-});
-t('hiring window is advice, never a block', () => {
-  assert.equal(timelineHint('2026-11-01', '2026-11-10').state, 'aggressive'); assert.equal(timelineHint('2026-11-01', '2026-11-20').state, 'ideal');
-  assert.equal(timelineHint('2026-11-01', '2027-02-01').state, 'extended'); assert.equal(timelineHint('2026-11-01', '').from, '2026-11-16');
+  assert.equal(submitProblems({ ...ok, is_remote: true, work_location: '', remote_region: 'pan_india' }, masters).length, 0, 'custom / remote locations are accepted');
 });
 t('formatting edits are not material, wording edits are', () => {
   assert.equal(isMaterialJdChange('• Lead  the team.', '- lead the TEAM'), false); assert.equal(isMaterialJdChange('Lead the team', 'Lead the sales team'), true);

@@ -5,12 +5,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import { Loader2, Plus, Search, ClipboardList, BarChart3, Settings2, AlertTriangle } from 'lucide-react';
+import { Loader2, Plus, Search, ClipboardList, BarChart3, Settings2, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { mrf, statusOf, PRIORITY_CLS, fmt, labelOf, today } from '@/lib/mrf';
 import MrfForm from '@/components/mrf/MrfForm';
 import MrfDetail from '@/components/mrf/MrfDetail';
 import MrfDashboard from '@/components/mrf/MrfDashboard';
+import MrfRules from '@/components/mrf/MrfRules';
 import MrfMasters from '@/components/mrf/MrfMasters';
 
 const FILTERS = [['all', 'All'], ['mine', 'Raised by me'], ['approve', 'Needs my approval'], ['draft', 'Drafts'], ['pending_hm_approval', 'Pending JD approval'], ['pending_hr_publication', 'Pending publication'], ['published', 'Published'], ['closed', 'Closed']];
@@ -19,14 +20,16 @@ export default function ManpowerRequisitions() {
   const [options, setOptions] = useState(null);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState('list');
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [form, setForm] = useState({ open: false, initial: null });
   const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState(searchParams.get('tab') || 'list');
   const [openId, setOpenId] = useState(searchParams.get('open') || null);
 
+  const [version, setVersion] = useState(0);       // bumps after every change so the MIS reloads
   const load = useCallback(async () => {
+    setVersion((v) => v + 1);
     try {
       const [opt, list, users] = await Promise.all([mrf('mrf_options'), base44.entities.JobRequisition.list('-created_date', 1000), base44.functions.invoke('getAllUsers', {}).catch(() => null)]);
       setOptions({ ...opt, users: users?.data?.users || [] });
@@ -39,28 +42,31 @@ export default function ManpowerRequisitions() {
   const me = options?.me?.user_id;
   const masters = options?.masters || {};
   const nameOf = (id) => options?.employees?.find((e) => e.user_id === id)?.name || options?.users?.find((u) => u.id === id)?.full_name || '';
+  // waiting on me: as Hiring Manager (JD approval) or as Department Head
+  const needsMine = (r) => (r.hiring_manager_id === me && r.status === 'pending_hm_approval') || (r.status === 'pending_hr_publication' && r.dh_approval?.status === 'pending' && r.dh_approval.head_user_id === me);
   const shown = useMemo(() => {
     const s = search.trim().toLowerCase();
     return rows.filter((r) => {
       if (filter === 'mine' && r.requested_by !== me) return false;
-      if (filter === 'approve' && !(r.hiring_manager_id === me && r.status === 'pending_hm_approval')) return false;
+      if (filter === 'approve' && !needsMine(r)) return false;
       if (['draft', 'pending_hm_approval', 'pending_hr_publication', 'published'].includes(filter) && r.status !== filter) return false;
       if (filter === 'closed' && !['closed', 'cancelled', 'rejected'].includes(r.status)) return false;
       if (s && ![r.requisition_id, r.designation, r.department, r.location, nameOf(r.hiring_manager_id), nameOf(r.requested_by)].join(' ').toLowerCase().includes(s)) return false;
       return true;
     });
   }, [rows, filter, search, me]); // eslint-disable-line react-hooks/exhaustive-deps
-  const awaiting = rows.filter((r) => r.hiring_manager_id === me && r.status === 'pending_hm_approval').length;
+  const awaiting = rows.filter(needsMine).length;
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin" /></div>;
-  const canDash = options?.is_org_wide; const isHr = options?.is_hr;
+  // org-wide roles get the consolidated MIS; Hiring Managers and Department Heads get it for their own requisitions
+  const canDash = options?.is_org_wide || options?.is_department_head || rows.some((r) => r.hiring_manager_id === me || r.requested_by === me); const isHr = options?.is_hr;
   const TabBtn = ({ id, icon: Icon, children }) => (
     <button type="button" onClick={() => setTab(id)} className={`px-3 py-2 text-sm flex items-center gap-1.5 border-b-2 ${tab === id ? 'border-primary text-primary font-medium' : 'border-transparent text-muted-foreground hover:text-foreground'}`}><Icon className="w-4 h-4" />{children}</button>
   );
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
-      <div className="max-w-7xl mx-auto space-y-5">
+      <div className={`${tab === 'dash' ? 'max-w-[1600px]' : 'max-w-7xl'} mx-auto space-y-5`}>
         <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
           <div>
             <h1 className="text-2xl font-bold">Manpower Requisitions</h1>
@@ -73,13 +79,14 @@ export default function ManpowerRequisitions() {
         </div>
 
         {awaiting > 0 && (
-          <div className="rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-sm flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-yellow-700" /> {awaiting} Job Description{awaiting > 1 ? 's' : ''} waiting for your approval.
+          <div className="rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-sm flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-yellow-700" /> {awaiting} requisition{awaiting > 1 ? 's' : ''} waiting for your approval.
             <button type="button" className="underline ml-1" onClick={() => { setTab('list'); setFilter('approve'); }}>Show</button></div>
         )}
 
-        <div className="flex border-b">
+        <div className="flex border-b overflow-x-auto">
           <TabBtn id="list" icon={ClipboardList}>Requisitions</TabBtn>
-          {canDash && <TabBtn id="dash" icon={BarChart3}>Dashboard</TabBtn>}
+          {canDash && <TabBtn id="dash" icon={BarChart3}>Recruitment MIS</TabBtn>}
+          {isHr && <TabBtn id="rules" icon={ShieldCheck}>Validation rules</TabBtn>}
           {isHr && <TabBtn id="masters" icon={Settings2}>Master configuration</TabBtn>}
         </div>
 
@@ -93,7 +100,7 @@ export default function ManpowerRequisitions() {
               {shown.length === 0 ? <p className="text-center text-muted-foreground py-12 text-sm">{rows.length ? 'No requisitions match.' : 'No requisitions yet. Click “New MRF” to raise one.'}</p> : (
                 <div className="divide-y">
                   {shown.map((r) => {
-                    const st = statusOf(r); const needsMe = r.hiring_manager_id === me && r.status === 'pending_hm_approval';
+                    const st = statusOf(r); const needsMe = needsMine(r);
                     const overdue = r.target_hire_date && r.target_hire_date < today() && ['pending_hm_approval', 'changes_requested', 'pending_hr_publication', 'published', 'on_hold'].includes(r.status);
                     return (
                       <button key={r.id} type="button" onClick={() => setOpenId(r.id)} className={`w-full text-left p-4 hover:bg-muted/40 ${needsMe ? 'bg-yellow-50/60' : ''}`}>
@@ -111,7 +118,8 @@ export default function ManpowerRequisitions() {
             </CardContent></Card>
           </div>
         )}
-        {tab === 'dash' && canDash && <MrfDashboard options={options} onOpen={setOpenId} />}
+        {tab === 'dash' && canDash && <MrfDashboard onOpen={setOpenId} refreshKey={version} />}
+        {tab === 'rules' && isHr && <MrfRules />}
         {tab === 'masters' && isHr && <MrfMasters onChanged={load} />}
       </div>
 

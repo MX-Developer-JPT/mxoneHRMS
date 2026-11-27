@@ -8,7 +8,8 @@ import { toast } from 'sonner';
 import { mrf, statusOf, PRIORITY_CLS, STAGES, stageIndex, fmt, labelOf } from '@/lib/mrf';
 import JdPanel, { JdText } from './JdPanel';
 import { printJd } from '@/lib/jdPrint';
-import { SearchSelect } from './Pickers';
+import { SearchSelect, selectCls } from './Pickers';
+import ValidationFlags from './ValidationFlags';
 
 const CHANNELS = ['Careers page', 'LinkedIn', 'Naukri', 'Indeed', 'Employee referral', 'Campus / placement cell'];
 
@@ -39,6 +40,8 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
   const [extend, setExtend] = useState(null);
   const [reassign, setReassign] = useState(null);   // { hms, to, reason }
   const [pipeline, setPipeline] = useState(null);
+  const [note, setNote] = useState('');
+  const [count, setCount] = useState(null);       // { kind: 'reopen' | 'withdraw', n, reason, needsCount }
 
   const load = async () => { try { const d = await mrf('mrf_get', { id }); setRec(d.requisition); } catch (e) { toast.error(e.message); onClose(); } };
   useEffect(() => { if (id) { setRec(null); setPipeline(null); load(); mrf('mrf_pipeline', { id }).then(setPipeline).catch(() => {}); } }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -58,6 +61,10 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
   const needAsk = (title, needsReason, run, label = 'Confirm', placeholder) => { setReason(''); setAsk({ title, needsReason, run, label, placeholder }); };
   const openReassign = async () => { try { const d = await mrf('mrf_hiring_managers', { department: rec.department }); setReassign({ hms: d.managers || [], to: '', reason: '' }); } catch (e) { toast.error(e.message); } };
   const openVacancies = Math.max(0, (Number(rec?.number_of_positions) || 1) - (Number(rec?.positions_filled) || 0));
+  const flags = rec?.live_flags || rec?.validation?.flags || [];
+  const allFilled = (Number(rec?.positions_filled) || 0) >= (Number(rec?.number_of_positions) || 1);
+  const withdrawable = (Number(rec?.number_of_positions) || 1) - Math.max(1, Number(rec?.positions_filled) || 0);
+  const override = (flag, justification) => act('override', () => mrf('mrf_override', { id, key: flag.key, justification }), 'Override recorded');
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -78,10 +85,22 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
             {rec.rejection_reason && status === 'rejected' && <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm">Rejected: {rec.rejection_reason}</div>}
             {rec.unpublished_reason && status === 'pending_hm_approval' && <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">{rec.unpublished_reason}</div>}
 
+            {rec.exception_requested && ['draft', 'changes_requested'].includes(status) && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm"><b>{rec.exception_requested.by_name}</b> asked for an exception: “{rec.exception_requested.reason}”</div>
+            )}
+            {rec.dh_approval?.required && status === 'pending_hr_publication' && (
+              <div className={`rounded-md border p-3 text-sm ${rec.dh_approval.status === 'approved' ? 'border-green-300 bg-green-50' : 'border-amber-300 bg-amber-50'}`}>
+                {rec.dh_approval.status === 'approved' ? <>Department Head approval recorded{rec.dh_approval.by_name ? ` by ${rec.dh_approval.by_name}` : ''}.</> : <>Waiting for the Department Head{rec.department_head_name ? ` (${rec.department_head_name})` : ' — none is set, so an admin can record it'} before HR can publish.</>}
+              </div>
+            )}
+            {flags.length > 0 && (
+              <div><p className="text-sm font-semibold mb-1.5">Validation checks</p><ValidationFlags flags={flags} canOverride={!!p.can_override && !['closed', 'cancelled', 'rejected', 'published', 'on_hold'].includes(status)} onOverride={override} /></div>
+            )}
+
             <div className="grid md:grid-cols-3 gap-4">
               <div className="rounded-lg border p-3 space-y-1">
                 <p className="text-xs font-bold uppercase text-muted-foreground mb-1">Requisition</p>
-                <Row k="Department" v={rec.department} /><Row k="Type" v={L('requisition_type', rec.requisition_type)} /><Row k="Tier" v={rec.position_tier === 'other_custom' ? rec.position_tier_custom : L('position_tier', rec.position_tier)} />
+                <Row k="Budget status" v={L('budget_status', rec.budget_status) || 'Not recorded'} /><Row k="Department" v={rec.department} /><Row k="Type" v={L('requisition_type', rec.requisition_type)} /><Row k="Tier" v={rec.position_tier === 'other_custom' ? rec.position_tier_custom : L('position_tier', rec.position_tier)} />
                 <Row k="Vacancies" v={`${rec.number_of_positions}${rec.positions_filled ? ` (${rec.positions_filled} filled)` : ''}`} /><Row k="Applications received" v={rec.applications || ''} /><Row k="Employment" v={L('employment_type', rec.employment_type)} /><Row k="Raised by" v={rec.requested_by_name} />
                 <Row k="Hiring Manager" v={rec.hiring_manager_name} /><Row k="Reports to" v={rec.reports_to_name} /><Row k="Date" v={fmt(rec.requisition_date)} />
                 <Row k="Replacing" v={rec.replaced_employee_name ? `${rec.replaced_employee_name}${rec.replaced_employee_code ? ` (${rec.replaced_employee_code})` : ''} — ${rec.replacement_reason || ''}` : ''} />
@@ -94,7 +113,13 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
               <div className="rounded-lg border p-3 space-y-1">
                 <p className="text-xs font-bold uppercase text-muted-foreground mb-1">Compensation, location & timeline</p>
                 <Row k="CTC" v={rec.ctc_min != null || rec.ctc_max != null ? `₹${Number(rec.ctc_min || 0).toLocaleString('en-IN')} – ₹${Number(rec.ctc_max || 0).toLocaleString('en-IN')} ${rec.ctc_frequency === 'monthly' ? '/ month' : 'p.a.'}${rec.disclose_ctc ? ' (public)' : ' (internal)'}` : ''} />
-                <Row k="Budget approved" v={rec.budget_approved ? `Yes${rec.budget_reference ? ` — ${rec.budget_reference}` : ''}` : 'No'} />
+                <Row k="Budget reference" v={rec.budget_reference} /><Row k="Recruiter" v={rec.recruiter_name} /><Row k="Positions withdrawn" v={rec.positions_withdrawn || ''} />
+                {p.hr && rec.recruiter_options && (
+                  <label className="text-sm flex items-center gap-2"><span className="text-muted-foreground shrink-0">Assign recruiter</span>
+                    <select className={selectCls} value={rec.recruiter_id || ''} disabled={!!busy} onChange={(ev) => act('recruiter', () => mrf('mrf_assign_recruiter', { id, recruiter_id: ev.target.value }), 'Recruiter updated')}>
+                      <option value="">Not assigned</option>{rec.recruiter_options.map((o) => <option key={o.user_id} value={o.user_id}>{o.name}</option>)}
+                    </select></label>
+                )}
                 <Row k="Location" v={rec.location} /><Row k="Arrangement" v={L('work_arrangement', rec.work_arrangement)} /><Row k="Target hiring date" v={rec.target_hire_date ? fmt(rec.target_hire_date) : ''} /><Row k="Timeline note" v={rec.timeline_justification} />
                 <Row k="Channels" v={rec.publish_channels} /><Row k="Published" v={rec.published_date ? fmt(rec.published_date) : ''} />
               </div>
@@ -132,6 +157,14 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
             {/* actions */}
             <div className="flex flex-wrap gap-2 border-t pt-3">
               {p.can_reassign_hm && <Button variant="outline" onClick={openReassign}>Change Hiring Manager</Button>}
+              {p.can_dh_decide && (
+                <>
+                  <Button className="bg-green-600 hover:bg-green-700" disabled={!!busy} onClick={() => act('dh', () => mrf('mrf_dh_decide', { id, action: 'approve' }), 'Approved')}><Check className="w-4 h-4 mr-1.5" />Approve as Department Head</Button>
+                  <Button variant="outline" onClick={() => needAsk('Send this requisition back (the JD approval is voided)', true, (r) => mrf('mrf_dh_decide', { id, action: 'send_back', comment: r }), 'Send back')}><Undo2 className="w-4 h-4 mr-1.5" />Send back</Button>
+                </>
+              )}
+              {p.publisher && ['closed', 'cancelled', 'rejected'].includes(status) && <Button variant="outline" onClick={() => setCount({ kind: 'reopen', n: allFilled ? '1' : '', reason: '', needsCount: allFilled })}><Play className="w-4 h-4 mr-1.5" />Reopen</Button>}
+              {p.publisher && ['published', 'on_hold', 'pending_hr_publication'].includes(status) && withdrawable > 0 && <Button variant="outline" onClick={() => setCount({ kind: 'withdraw', n: '1', reason: '', needsCount: true })}>Withdraw positions</Button>}
               {p.can_edit_details && <Button variant="outline" onClick={() => onEdit?.(rec)}><Pencil className="w-4 h-4 mr-1.5" />Edit details{status === 'changes_requested' ? ' & resubmit' : ''}</Button>}
               {p.can_decide && (
                 <>
@@ -165,6 +198,11 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
               )}
             </div>
 
+            <div className="flex flex-wrap gap-2">
+              <Input className="flex-1 min-w-[220px]" value={note} onChange={(ev) => setNote(ev.target.value)} placeholder="Add a comment (kept in the audit trail)" aria-label="Comment" />
+              <Button variant="outline" disabled={!!busy || note.trim().length < 2} onClick={() => act('comment', () => mrf('mrf_comment', { id, text: note.trim() }), 'Comment added').then(() => setNote(''))}>Comment</Button>
+            </div>
+
             <details className="text-xs">
               <summary className="cursor-pointer font-medium">Audit trail ({(rec.audit || []).length})</summary>
               <ul className="mt-2 space-y-1 max-h-64 overflow-y-auto">
@@ -186,6 +224,20 @@ export default function MrfDetail({ id, onClose, masters, onChanged, onEdit }) {
               <Button variant="outline" onClick={() => setAsk(null)}>Back</Button>
               <Button disabled={!!busy || (ask?.needsReason && reason.trim().length < 3)} onClick={async () => { const a = ask; setAsk(null); await act('ask', () => a.run(reason.trim()), 'Done'); }}>{ask?.label}</Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!count} onOpenChange={(o) => !o && setCount(null)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader><DialogTitle>{count?.kind === 'reopen' ? 'Reopen requisition' : 'Withdraw positions'}</DialogTitle></DialogHeader>
+            {count && (
+              <div className="space-y-3 text-sm">
+                <p className="text-muted-foreground">{count.kind === 'reopen' ? (rec?.approved_jd ? 'It goes back to HR publication.' : 'It goes back to the creator to be checked and submitted again.') : `Up to ${withdrawable} position(s) can be withdrawn.`}</p>
+                {(count.needsCount || count.kind === 'reopen') && <div><label className="text-xs font-medium">{count.kind === 'reopen' ? `Positions to add${count.needsCount ? ' (required: all are filled)' : ' (optional)'}` : 'Positions to withdraw'}</label><Input type="number" min={count.needsCount ? 1 : 0} value={count.n} onChange={(ev) => setCount({ ...count, n: ev.target.value })} /></div>}
+                <Input placeholder="Reason (required)" value={count.reason} onChange={(ev) => setCount({ ...count, reason: ev.target.value })} />
+              </div>
+            )}
+            <DialogFooter><Button disabled={!!busy || (count?.reason || '').trim().length < 3 || (count?.needsCount && !(Number(count?.n) >= 1))} onClick={async () => { const x = count; setCount(null); await act('count', () => mrf('mrf_status', { id, to: x.kind === 'reopen' ? 'reopen' : 'withdraw_positions', count: Number(x.n) || 0, reason: x.reason.trim() }), x.kind === 'reopen' ? 'Reopened' : 'Positions withdrawn'); }}>Confirm</Button></DialogFooter>
           </DialogContent>
         </Dialog>
 

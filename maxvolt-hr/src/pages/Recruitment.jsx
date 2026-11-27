@@ -801,6 +801,7 @@ export default function Recruitment() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!formData.requisition_id) { toast.error('Choose the requisition (MRF) this candidate is for'); return; }
     setAddingCandidate(true);
     try {
       // Manually-added candidates (referrals, walk-ins, sourced profiles)
@@ -839,7 +840,7 @@ export default function Recruitment() {
       setResumeFile(null);
       loadData();
     } catch (error) {
-      toast.error('Failed to add candidate');
+      toast.error(error?.message || 'Failed to add candidate');
     }
     setAddingCandidate(false);
   };
@@ -1097,11 +1098,10 @@ export default function Recruitment() {
                   )}
                 </div>
                   <div>
-                    <Label>Job Requisition (optional)</Label>
+                    <Label>Job Requisition (MRF) *</Label>
                     <Select value={formData.requisition_id || ''} onValueChange={v => { const j = jobRequisitions.find(x => x.id === v); setFormData({ ...formData, requisition_id: v === '_none' ? '' : v, ...(j && !formData.position_applied ? { position_applied: j.position_title } : {}) }); }}>
-                      <SelectTrigger><SelectValue placeholder="Link to open position..." /></SelectTrigger>
+                      <SelectTrigger><SelectValue placeholder="Select the requisition (required)" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="_none">— No Requisition —</SelectItem>
                         {jobRequisitions.filter(isHiringActive).map(j => (
                           <SelectItem key={j.id} value={j.id}>{reqLabel(j)}</SelectItem>
                         ))}

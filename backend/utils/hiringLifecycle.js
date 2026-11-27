@@ -85,6 +85,16 @@ export const allowedNext = (cand, role) => {
   return [...new Set([...(NEXT[from] || []), ...(!hasReq ? (LEGACY_EXTRA[from] || []) : [])])].filter((s) => !SYSTEM_ONLY.has(s) || (!hasReq && LEGACY_EXTRA[from]?.includes(s)));
 };
 
+export const requisitionOf = (c) => c?.requisition_id || c?.job_requisition_id || c?.job_id || '';
+const mailKey = (c) => { const e = String(c?.email || '').trim().toLowerCase(); return e.includes('@') ? e : ''; };
+const phoneKey = (c) => { const d = String(c?.phone || '').replace(/\D/g, ''); return d.length >= 10 ? d.slice(-10) : ''; };
+/** The record (among `rows`) for the same person — same email or phone — on the same requisition, or null. */
+export function samePersonOnRequisition(rows, cand) {
+  const req = requisitionOf(cand), mail = mailKey(cand), phone = phoneKey(cand);
+  if (!req || (!mail && !phone)) return null;
+  return rows.find((c) => c.id !== cand.id && requisitionOf(c) === req && ((mail && mailKey(c) === mail) || (phone && phoneKey(c) === phone))) || null;
+}
+
 /** A new copy of the candidate's timeline with one event appended (never edited, never removed). */
 export function appendTimeline(cand, evt) {
   const list = Array.isArray(cand.timeline) ? cand.timeline : [];
