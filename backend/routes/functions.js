@@ -29,7 +29,8 @@ import { isRoasterPolicy, roasterErrors, departmentAllowed, isDuhai, ROASTER_EXC
 import { loadRoasterConfig, saveRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
 import { COMPETENCIES, SCALE, OPEN_QUESTIONS, MIN_RATERS, LEGACY_PERIOD, currentPeriod, normalizePeriod, periodLabel, validateSubmission, summarize, periodsOf } from '../utils/feedback360.js';
-// Statutory EPF wage ceiling (monthly basic). Employee PF = 12%, employer 13% on min(basic, this). Was 15,000; now 25,000.const PF_WAGE_CEILING = 25000;
+// Statutory EPF wage ceiling (monthly basic). Employee PF = 12%, employer 13% on min(basic, this). Was 15,000; now 25,000.
+const PF_WAGE_CEILING = 25000;
 
 const _require  = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
