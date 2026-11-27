@@ -78,7 +78,7 @@ export default function LeaveDashboard() {
               policy: policy?.name || '—',
               allocated: bal.total_allocated,
               used: bal.used,
-              remaining: bal.available || (bal.total_allocated - bal.used),
+              remaining: bal.available ?? (bal.total_allocated - bal.used),   // 0 left is a real value
               pct,
             });
           }
@@ -90,7 +90,7 @@ export default function LeaveDashboard() {
       const avgDays = totalLeaves > 0 ? (scopedLeaves.reduce((s, l) => s + (l.total_days || 0), 0) / totalLeaves) : 0;
 
       setDeptData(deptArray);
-      setNearingLimit(nearing.slice(0, 20));
+      setNearingLimit(nearing);
       setStats({ totalLeaves, totalEmployees: activeEmp.length, avgDays: avgDays.toFixed(1) });
       setLoading(false);
     } catch (error) {

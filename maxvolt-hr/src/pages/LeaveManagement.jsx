@@ -97,7 +97,7 @@ export default function LeaveManagement() {
       const [empRecords, policies, allBalances] = await Promise.all([
         base44.entities.Employee.list(),
         base44.entities.LeavePolicy.list(),
-        base44.entities.LeaveBalance.list('-created_date', 2000).catch(() => []),
+        base44.entities.LeaveBalance.list('-created_date').catch(() => []),   // every row: a cap silently showed older balances as "Not set"
       ]);
 
       const empUserRec = empRecords.find(e => e.user_id === currentUser.id);
@@ -117,7 +117,8 @@ export default function LeaveManagement() {
       });
       setLeaveBalances(balMap);
 
-      let requests = await base44.entities.Leave.list('-created_date', 500);
+      // every request: a cap hid older ones, including some still awaiting approval, and froze the counts at that number
+      let requests = await base44.entities.Leave.list('-created_date');
 
       const isHR = ['hr', 'admin'].includes(currentUser.role) || ['hr', 'admin'].includes(currentUser.custom_role);
       // Both 'manager' and 'management' are scoped to their own downstream
