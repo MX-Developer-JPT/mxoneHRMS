@@ -4834,6 +4834,15 @@ router.post('/:name', async (req, res) => {
 
     case 'nativeGeofenceEvent': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
+      const ngReply = res.json.bind(res);
+      res.json = (body) => {   // every outcome is kept (and printed), whichever rule decided it
+        import('../utils/fieldTracking.js').then(({ geofenceLogEntry }) => {
+          const entry = geofenceLogEntry(p, body, Date.now());
+          console.log('[geofence] ' + cu.id.slice(0, 8) + ' ' + entry.event + ' via ' + entry.via + ' -> ' + (entry.ok ? '' : 'refused ') + entry.outcome);
+          return recordTrackingDevice(cu.id, null, { geo: entry });
+        }).catch(e => console.warn('[geofence] could not log:', e.message));
+        return ngReply(body);
+      };
       const ngRelease = await keyedLock('att:' + cu.id);   // shared with selfie and machine punches: one writer per person at a time
       try {
       const { event, latitude, longitude, accuracy, occurred_at, location_name, is_mock, device_id, source, event_id } = p;
@@ -22133,6 +22142,10 @@ async function getEligibleFieldEmployees() {
 // What a phone last said about its own location permission / GPS / battery, plus a short history of changes and of rejected
 // (mock) locations. One private row per employee (TrackingDevice); only the field-duty / geofence functions touch it.
 async function recordTrackingDevice(userId, report, extra) {
+  const release = await keyedLock('td:' + userId);   // reports, mock flags and geofence history rewrite the same row
+  try { return await writeTrackingDevice(userId, report, extra); } finally { release(); }
+}
+async function writeTrackingDevice(userId, report, extra) {
   const { devicePolicyProblems } = await import('../utils/fieldTracking.js');
   const cfg = await getFieldTrackingConfig();
   const id = 'td-' + userId;
@@ -22153,6 +22166,7 @@ async function recordTrackingDevice(userId, report, extra) {
   }
   if (extra?.mock && !events.slice(-5).some(e => e.kind === 'mock_location' && Date.now() - Date.parse(e.at) < 300000)) events.push({ at: now, kind: 'mock_location', where: extra.where || '' });
   if (extra?.last_geo) next.last_geo = extra.last_geo;
+  if (extra?.geo) next.geo_log = [...(d.geo_log || []), extra.geo].slice(-60);
   next.events = events.slice(-200);
   await run("DELETE FROM entities WHERE id=$1 AND type='TrackingDevice'", [id]);
   await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'TrackingDevice',$2,'ready',$3)", [id, userId, JSON.stringify(next)]);

@@ -581,6 +581,20 @@ export function geofenceExitAllowed(att) {
   return !!last && last.device_direction === 'IN' && Date.parse(last.time) === Date.parse(att.geofence_open_in);
 }
 
+// One line of history for every geofence event a phone sends: what it was, from which engine, and what the server did with it.
+// Without this a missing check-out cannot be told apart from an event that never arrived.
+export function geofenceLogEntry(payload, reply, nowMs) {
+  const p = payload || {}, r = reply || {};
+  const occ = Date.parse(p.occurred_at), dev = Date.parse(p.device_now);
+  return {
+    at: new Date(nowMs).toISOString(), event: String(p.event || '').slice(0, 8),
+    via: String(p.device_id || p.source || '').slice(0, 60), fence: String(p.location_name || '').slice(0, 60),
+    acc: Number.isFinite(Number(p.accuracy)) && p.accuracy !== null ? Math.round(Number(p.accuracy)) : null,
+    late_s: Number.isFinite(occ) && Number.isFinite(dev) ? Math.max(0, Math.round((dev - occ) / 1000)) : null,
+    ok: r.success === true, outcome: String(r.action && r.action !== 'none' ? r.action : r.reason || r.code || r.error || r.action || '').slice(0, 120),
+  };
+}
+
 export function geofenceAllowedM(radiusM, accuracyM, cfg = FT_DEFAULTS) {
   return Number(radiusM) + Math.min(Number(accuracyM) || 0, cfg.geofence_max_accuracy_m) * 0.5 + cfg.geofence_slack_m;
 }

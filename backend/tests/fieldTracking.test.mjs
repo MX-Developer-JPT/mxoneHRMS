@@ -490,3 +490,12 @@ test('parked phone: rough battery-saving fixes keep the last position current on
   assert.equal(stillThere(lp, [pt(0, 30, { acc: 20, mock: true })], NOW).t, lp.t);  // fake GPS
   assert.equal(stillThere(lp, [pt(0, 30, { acc: 900 })], NOW).t, lp.t);             // too vague to say anything
 });
+
+test('geofence history keeps what happened to each event', async () => {
+  const { geofenceLogEntry } = await import('../utils/fieldTracking.js');
+  const p = { event: 'exit', device_id: 'android-os-geofence', location_name: 'Office', accuracy: 12.4, occurred_at: iso(90), device_now: iso(0) };
+  const skipped = geofenceLogEntry(p, { success: true, action: 'none', reason: 'not_geofence_session' }, NOW);
+  assert.deepEqual([skipped.event, skipped.ok, skipped.outcome, skipped.late_s, skipped.acc], ['exit', true, 'not_geofence_session', 90, 12]);
+  assert.equal(geofenceLogEntry(p, { success: true, action: 'checked_out' }, NOW).outcome, 'checked_out');
+  assert.equal(geofenceLogEntry({ event: 'exit', accuracy: null }, { success: false, code: 'LOW_ACCURACY' }, NOW).outcome, 'LOW_ACCURACY');
+});
