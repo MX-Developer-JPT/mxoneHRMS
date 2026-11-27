@@ -28,6 +28,7 @@ import { loadOffRole, buildOffRoleWorkbook } from '../utils/offRoleAttendance.js
 import { isRoasterPolicy, roasterErrors, departmentAllowed, isDuhai, ROASTER_EXCLUDED_DEPARTMENTS } from '../utils/roaster.js';
 import { loadRoasterConfig, saveRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
+import { sendProbationReviewMail, withHrCopy } from '../utils/probationMail.js';
 import { COMPETENCIES, SCALE, OPEN_QUESTIONS, MIN_RATERS, LEGACY_PERIOD, currentPeriod, normalizePeriod, periodLabel, validateSubmission, summarize, periodsOf } from '../utils/feedback360.js';
 // Statutory EPF wage ceiling (monthly basic). Employee PF = 12%, employer 13% on min(basic, this). Was 15,000; now 25,000.
 const PF_WAGE_CEILING = 25000;
@@ -17963,6 +17964,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const sprNid = uuidv4();
         await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [sprNid, sprHr.id, 'Probation Review Submitted', `${sprEmpName}'s probation review submitted by ${sprMgrName}.`, 'probation', '/admin-panel']);
       }
+      sendProbationReviewMail({ to: cu.email, title: 'Probation review submitted', intro: `${sprMgrName} has submitted a probation confirmation review. It is awaiting HR review.`, review: sprData, remarks: sprData.manager_comments });
       return res.json({ success: true, review_id: sprId });
     }
 
@@ -18009,6 +18011,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         await run("UPDATE entities SET data=$1,status='rejected',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(phrUpd), phrRow.id]);
         const phrNid = uuidv4();
         await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [phrNid, phrRev.user_id, 'Probation Review Rejected', 'Your probation review has been rejected by HR. Please contact your manager for details.', 'probation', '/profile']);
+        const phrMgr = phrRev.manager_id ? await one("SELECT email FROM users WHERE id=$1", [phrRev.manager_id]) : null;
+        sendProbationReviewMail({ to: phrMgr?.email, title: 'Probation review sent back', intro: `${phrHrName} (HR) has sent this probation review back.`, review: phrUpd, remarks: phrUpd.hr_comments });
       } else {
         const phrUpd = { ...phrRev, status: 'hr_approved', hr_comments: phrComments || '', hr_reviewed_by: phrHrId, hr_reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() };
         await run("UPDATE entities SET data=$1,status='hr_approved',updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(phrUpd), phrRow.id]);
@@ -18017,6 +18021,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
           const phrMNid = uuidv4();
           await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [phrMNid, phrMgmt.id, 'Probation Review Awaiting Approval', `${phrRev.employee_name}'s probation review has been approved by HR and requires your final decision.`, 'probation', '/admin-panel']);
         }
+        sendProbationReviewMail({ to: (await all("SELECT email FROM users WHERE disabled_at IS NULL AND (custom_role='management' OR role='management')")).map(u => u.email), title: 'Probation review awaiting decision', intro: `${phrHrName} (HR) has approved this probation review. It needs the final management decision.`, review: phrUpd, remarks: phrUpd.hr_comments });
       }
       return res.json({ success: true });
     }
@@ -18053,6 +18058,8 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const pmaMgrMsgs = { confirmed: `${pmaRev.employee_name}'s probation has been confirmed by management.`, extended: `${pmaRev.employee_name}'s probation has been extended by management.`, rejected: `${pmaRev.employee_name}'s probation review has resulted in rejection by management.` };
         await notify(pmaRev.manager_id, { title: 'Probation Review Result', message: pmaMgrMsgs[pmaFinalAction] || `${pmaRev.employee_name}'s probation status has been updated.`, type: 'info', link: '/ConfirmationManagement' });
       }
+      const pmaMgr = pmaRev.manager_id ? await one("SELECT email FROM users WHERE id=$1", [pmaRev.manager_id]) : null;
+      sendProbationReviewMail({ to: pmaMgr?.email, title: 'Probation decision recorded', intro: `${pmaMgmtName} has recorded the final probation decision.`, review: pmaUpd, remarks: pmaUpd.management_comments });
       return res.json({ success: true, final_action: pmaFinalAction, ...(pmaExit ? { exit_id: pmaExit.exit_id, last_working_date: pmaExit.last_working_date } : {}) });
     }
 
@@ -18091,6 +18098,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         const hicNid = uuidv4();
         await run("INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)", [hicNid, hicMgmt.id, 'Confirmation Review Ready', `HR has submitted ${hicEmpName}'s confirmation review for your decision.`, 'probation', '/admin-panel']);
       }
+      sendProbationReviewMail({ to: (await all("SELECT email FROM users WHERE disabled_at IS NULL AND (custom_role='management' OR role='management')")).map(u => u.email), title: 'Probation review awaiting decision', intro: `${hicData.manager_name} (HR) has submitted a confirmation review for your decision.`, review: hicData, remarks: hicData.manager_comments });
       return res.json({ success: true, review_id: hicId });
     }
 
@@ -18182,7 +18190,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
         : [];
 
       await sendEmail({
-        to: sclUser.email,
+        ...(await withHrCopy(sclUser.email)),
         meta: { source: 'employee-letter', confirm: true },
         subject: `${label} – Maxvolt Energy Industries Limited`,
         html: `<div style="font-family:Arial,sans-serif;color:#111;font-size:14px;line-height:1.7">

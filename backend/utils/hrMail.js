@@ -21,7 +21,7 @@ export const validEmail = (e) => {
   return s.length <= 254 && EMAIL_RE.test(s) && !s.includes('..') && !s.split('@')[0].startsWith('.') && !s.split('@')[0].endsWith('.') && !s.toLowerCase().includes('.disabled-');
 };
 
-const EMPTY = () => ({ rewrite: new Map(), cc: [], excluded: [] });
+const EMPTY = () => ({ rewrite: new Map(), cc: [], all: [], excluded: [] });
 
 // users: active HR accounts [{id,email}]; config: stored settings object.
 export function buildDirectory(users, config = {}) {
@@ -33,7 +33,9 @@ export function buildDirectory(users, config = {}) {
     if (!validEmail(actual)) continue;
     const login = String(u.email || '').trim().toLowerCase();
     if (login && login !== actual) dir.rewrite.set(login, actual);
-    if (config.cc_enabled !== false && !seen.has(actual)) { seen.add(actual); dir.cc.push(actual); }
+    if (seen.has(actual)) continue;
+    seen.add(actual); dir.all.push(actual);
+    if (config.cc_enabled !== false) dir.cc.push(actual);
   }
   return dir;
 }
@@ -61,10 +63,11 @@ export async function loadHrDirectory() {
   }
 }
 
-// Where HR-only mail (support requests, account deletion …) should go: the configured mailboxes, else the given fallback.
+// Where mail meant for HR (support requests, probation reviews …) should go: every configured mailbox — whether or not the
+// general HR copy is switched on — else the given fallback.
 export async function hrRecipients(fallback) {
-  const { cc } = await loadHrDirectory();
-  return cc.length ? cc : [fallback].filter(Boolean);
+  const { all } = await loadHrDirectory();
+  return all.length ? all : [fallback].filter(Boolean);
 }
 
 // A link is private when it carries a token or a long random segment — anyone holding it can act as the recipient.

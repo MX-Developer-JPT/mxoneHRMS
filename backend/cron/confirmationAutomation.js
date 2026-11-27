@@ -7,6 +7,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
+import { withHrCopy } from '../utils/probationMail.js';
 
 const CONFIRMATION_DUE_WINDOW_DAYS = 30;
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -51,9 +52,9 @@ export async function sendConfirmationDueReminders() {
 
   let checked = 0, sent = 0;
   for (const emp of employees) {
-    if (!emp.reporting_manager_id) continue;
     const manager = managerMap.get(emp.reporting_manager_id);
-    if (!manager?.email) continue;
+    // Without a manager to remind, HR is told instead (only for people explicitly marked as on probation).
+    if (!manager?.email && emp.employee_status !== 'probation') continue;
 
     // Same 180-day (six month) fallback used by getProbationEmployees — kept
     // in sync so the email and the Confirmation Management dashboard never
@@ -73,14 +74,14 @@ export async function sendConfirmationDueReminders() {
 
     try {
       const tpl = emailTemplates.confirmationDueReminder({
-        managerName: manager.full_name,
+        managerName: manager?.email ? manager.full_name : 'HR Team',
         employeeName: emp.display_name || 'An employee',
         department: emp.department,
         designation: emp.designation,
         probationEndDate: probEndStr,
         daysLeft,
       });
-      await sendEmail({ to: manager.email, ...tpl });
+      await sendEmail({ ...(await withHrCopy(manager?.email)), ...tpl, meta: { source: 'probation-review' } });
       await markReminded(emp.user_id, probEndStr);
       sent++;
     } catch (e) {

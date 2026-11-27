@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 process.env.MAIL_GATEWAY_URL = 'https://gw.test'; process.env.MAIL_GATEWAY_KEY = 'k'; process.env.BREVO_API_KEY = ''; process.env.EMAIL_PROVIDER = 'auto'; process.env.EMAIL_SETTINGS_FROM_ENV = '1'; process.env.SMTP_FROM = 'Maxvolt HR <no-reply@maxvoltenergy.com>';
 const { validEmail, buildDirectory, setHrDirectoryForTests, hrRecipients } = await import('../utils/hrMail.js');
 const { sendEmail } = await import('../utils/email.js');
+const { sendProbationReviewMail } = await import('../utils/probationMail.js');
 let n = 0; const t = async (name, fn) => { await fn(); n++; console.log('ok  ', name); };
 let sent = []; let failCopy = false;
 globalThis.fetch = async (_u, o = {}) => {
@@ -45,5 +46,13 @@ await t('switched off, an excluded type, or nothing configured: mail goes out as
 });
 await t('HR-only mail goes to the configured mailboxes, else the fallback', async () => {
   use(); assert.deepEqual(await hrRecipients('hr@co.com'), ['asha@co.com', 'ravi@co.com']); use({}); assert.deepEqual(await hrRecipients('hr@co.com'), ['hr@co.com']);
+});
+await t('probation review mails copy every configured HR mailbox, even with the general copy off', async () => {
+  for (const c of [config, { ...config, cc_enabled: false }]) {
+    use(c); await sendProbationReviewMail({ to: 'mgr@co.com', title: 'Probation review submitted', intro: 'x', review: { employee_name: 'A <b>', action: 'confirm' }, remarks: '<script>' });
+    assert.equal(sent.length, 1); assert.deepEqual(sent[0].to, ['mgr@co.com']); assert.deepEqual(sent[0].cc, ['asha@co.com', 'ravi@co.com']);
+    assert.ok(!sent[0].html.includes('<script>') && !sent[0].html.includes('<b>'));
+  }
+  use(); await sendProbationReviewMail({ to: [], title: 'T', intro: 'x', review: { employee_name: 'A' } }); assert.deepEqual(sent[0].to, ['asha@co.com', 'ravi@co.com']); assert.equal(sent[0].cc, undefined);
 });
 console.log(`\n${n} passed`);
