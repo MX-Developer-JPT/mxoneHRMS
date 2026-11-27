@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { loadHrDirectory, planDistribution } from './hrMail.js';
 
 // ── Email delivery ───────────────────────────────────────────
 // Mail goes out through Max Mail (our own gateway: Gmail API as no-reply@maxvoltenergy.com) and falls back to Brevo when the
@@ -201,9 +202,18 @@ export async function verifyEmail() {
 // to: string email or array of strings
 // meta: { source?: tag, confirm?: wait for the real delivery outcome (OTP and similar) }
 export async function sendEmail({ to, cc, subject, html, text, attachments, meta, scheduledAt, replyTo }) {
+  const toList = cleanList(to);
+  if (!toList.length) throw new Error('sendEmail: no valid recipient address');
+  // HR mailbox mapping and the HR copy are applied here, for every mail the system sends (utils/hrMail.js).
+  const { primary, copy } = planDistribution({ to: toList, cc: cleanList(cc), subject, html, text, attachments, meta, scheduledAt, replyTo }, await loadHrDirectory());
+  const result = await deliver(primary);
+  if (copy) await deliver(copy).catch((e) => console.warn(`[email] HR copy of "${String(subject).slice(0, 60)}" not sent: ${e.message}`));
+  return result;
+}
+
+async function deliver({ to, cc, subject, html, text, attachments, meta, scheduledAt, replyTo }) {
   const from = await getFromAddress();
   const recipients = cleanList(to);
-  if (!recipients.length) throw new Error('sendEmail: no valid recipient address');
   const ccList = cleanList(cc).filter((c) => !recipients.includes(c)).map(parseAddress);
 
   if (gatewayOn() && !scheduledAt) {                                 // scheduled sending exists only at Brevo

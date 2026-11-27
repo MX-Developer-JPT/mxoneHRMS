@@ -351,7 +351,7 @@ router.post('/batches/:id/send', async (req, res) => {
         const mail = buildEmail({ emp: empOf(r), previous: r.previous, revised: r.revised, batch: b });
         const out = await sendEmail({
           to, subject: (test_to ? '[TEST] ' : '') + mail.subject, html: mail.html, text: mail.text,
-          attachments: [{ filename: letterFilename(r), content: pdf }], meta: { source: 'salary-revision' },
+          attachments: [{ filename: letterFilename(r), content: pdf }], meta: { source: test_to ? 'test' : 'salary-revision' },
         });
         await writeLog(b.id, r.code, r.user_id, { action: test_to ? 'test_send' : 'send', ok: true, by: cu.id, by_name: cu.name, to_masked: maskEmail(to), message_id: out?.messageId || '', resend: resend && !test_to });
         results.push({ code: r.code, ok: true });

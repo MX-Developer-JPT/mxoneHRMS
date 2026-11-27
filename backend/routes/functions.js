@@ -7574,7 +7574,7 @@ router.post('/:name', async (req, res) => {
         out.test = {};
         try { await notify(cu.id, { title: 'Notification health check', message: 'In-app + push test from the admin health check.', type: 'info', link: '/' }); out.test.in_app = 'created'; } catch (e) { out.test.in_app = 'FAILED: ' + e.message; }
         try { const { sendTestPushToUser } = await import('../utils/push.js'); out.test.native_push = await sendTestPushToUser(cu.id); } catch (e) { out.test.native_push = 'FAILED: ' + e.message; }
-        try { const { sendEmail } = await import('../utils/email.js'); if (cu.email) { await sendEmail({ to: cu.email, subject: 'Maxvolt One — notification health check', html: '<p>This is a test e-mail from the Maxvolt One notification health check. If you received it, e-mail delivery is working.</p>' }); out.test.email = 'sent to ' + cu.email; } else out.test.email = 'no e-mail on your account'; } catch (e) { out.test.email = 'FAILED: ' + e.message; }
+        try { const { sendEmail } = await import('../utils/email.js'); if (cu.email) { await sendEmail({ to: cu.email, meta: { source: 'test' }, subject: 'Maxvolt One — notification health check', html: '<p>This is a test e-mail from the Maxvolt One notification health check. If you received it, e-mail delivery is working.</p>' }); out.test.email = 'sent to ' + cu.email; } else out.test.email = 'no e-mail on your account'; } catch (e) { out.test.email = 'FAILED: ' + e.message; }
       }
       return res.json({ success: true, ...out });
     }
@@ -9480,6 +9480,7 @@ router.post('/:name', async (req, res) => {
           const html = buildPayslipHtml(pr, emp);
           await sendEmail({
             to: email,
+            meta: { source: 'payslip' },
             subject: `Your Payslip for ${monLabel} — Maxvolt Energy`,
             html: `<div style="font-family:Arial,sans-serif;max-width:600px">
               <p>Dear ${emp.display_name || 'Employee'},</p>
@@ -12681,7 +12682,7 @@ router.post('/:name', async (req, res) => {
       };
       await run("UPDATE entities SET data=$1 WHERE id=$2", [JSON.stringify(updated), row.id]);
 
-      const hrEmail = process.env.HR_EMAIL || 'hr@maxvoltenergy.com';
+      const hrEmail = await (await import('../utils/hrMail.js')).hrRecipients(process.env.HR_EMAIL || 'hr@maxvoltenergy.com');
       await sendEmail({
         to: hrEmail,
         subject: `Documents Submitted: ${cand.full_name || 'Candidate'}`,
@@ -13045,7 +13046,7 @@ router.post('/:name', async (req, res) => {
       await run("UPDATE entities SET status='offer_accepted', data=$1 WHERE id=$2", [JSON.stringify(updated), row.id]);
 
       // Notify HR
-      const hrEmail = process.env.HR_EMAIL || 'hr@maxvoltenergy.com';
+      const hrEmail = await (await import('../utils/hrMail.js')).hrRecipients(process.env.HR_EMAIL || 'hr@maxvoltenergy.com');
       await sendEmail({
         to: hrEmail,
         subject: `Offer Accepted: ${updated.full_name} – ${updated.designation || updated.position_applied}`,
@@ -21087,7 +21088,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
 
       try {
         await sendEmail({
-          to: 'hr@maxvoltenergy.com',
+          to: await (await import('../utils/hrMail.js')).hrRecipients('hr@maxvoltenergy.com'),
           subject: `Account Deletion Request — ${d.email}`,
           html: `<div style="font-family:Arial,sans-serif;font-size:14px">
             <p>A user has requested deletion of their account and associated data.</p>
@@ -21146,7 +21147,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
 
       try {
         await sendEmail({
-          to: 'hr@maxvoltenergy.com',
+          to: await (await import('../utils/hrMail.js')).hrRecipients('hr@maxvoltenergy.com'),
           subject: `[Support] ${d.subject} — ${d.name || d.email}`,
           html: `<div style="font-family:Arial,sans-serif;font-size:14px">
             <p>A support request was submitted${d.user_id ? ' from inside the app' : ' from the public support page'}.</p>

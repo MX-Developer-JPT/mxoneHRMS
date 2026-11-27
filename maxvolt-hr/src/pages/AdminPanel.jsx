@@ -22,6 +22,7 @@ import ExitClearanceConfigTab from '@/components/admin/ExitClearanceConfigTab';
 import ProbationConfirmationTab from '@/components/admin/ProbationConfirmationTab';
 import CompOffAdminTab from '@/components/admin/CompOffAdminTab';
 import KioskManagementTab from '@/components/admin/KioskManagementTab';
+import HrEmailTab from '@/components/admin/HrEmailTab';
 import LeaveCancelTab from '@/components/admin/LeaveCancelTab';
 import BulkMarkPresentTab from '@/components/admin/BulkMarkPresentTab';
 
@@ -2837,6 +2838,7 @@ export default function AdminPanel() {
     { id: 'notif_health', label: 'Notification Health & MIS Mail', icon: Mail },
     { id: 'walkthrough',label: 'App Walkthrough',    icon: Compass },
     { id: 'email',      label: 'Email Settings',     icon: Mail },
+    { id: 'hr_emails',  label: 'HR Email Addresses', icon: Mail },
     { id: 'ai',         label: 'AI Settings',        icon: Bot },
     { id: 'api',        label: 'API Integration',    icon: Fingerprint },
     { id: 'audit',      label: 'Audit Log',          icon: ScrollText },
@@ -2887,6 +2889,7 @@ export default function AdminPanel() {
       {tab === 'notif_health' && <NotificationHealthTab />}
       {tab === 'walkthrough' && <WalkthroughTab />}
       {tab === 'email'      && <EmailTab />}
+      {tab === 'hr_emails'  && <HrEmailTab adminFetch={adminFetch} />}
       {tab === 'ai'         && <AITab />}
       {tab === 'api'        && <ApiIntegrationTab />}
       {tab === 'audit'      && <AuditLogTab />}

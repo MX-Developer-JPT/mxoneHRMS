@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { one, all, run } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { sendEmail, verifyEmail, emailTemplates, getEmailConfig } from '../utils/email.js';
+import { CONFIG_KEY, OPTIONAL_TYPES, HR_USERS_SQL, validEmail, clearHrMailCache } from '../utils/hrMail.js';
 
 const router = Router();
 
@@ -68,7 +69,7 @@ router.get('/entity-types', async (_req, res) => {
 
 // ── List entities of a type (paginated) ───────────────────
 // Permanent records (signed policy acknowledgements) cannot be changed or deleted through the admin entity tools.
-const PERMANENT_TYPES = new Set(['LdPolicyAck']);
+const PERMANENT_TYPES = new Set(['LdPolicyAck', 'HrEmailAudit']);
 router.use('/entities/:type', (req, res, next) => (PERMANENT_TYPES.has(req.params.type) && req.method !== 'GET' ? res.status(403).json({ error: 'This is a permanent record and cannot be changed or deleted' }) : next()));
 
 router.get('/entities/:type', async (req, res) => {
@@ -291,6 +292,69 @@ router.post('/smtp-settings', async (req, res) => {
   }
   res.json({ success: true });
 });
+
+// ── HR email addresses: the real mailbox behind each HR account; every system mail copies them (utils/hrMail.js) ──
+const adminOnly = (req, res, next) => (req.isAdmin ? next() : res.status(403).json({ error: 'Only administrators can manage HR email addresses' }));
+const readHrConfig = async () => { const r = await one('SELECT value FROM settings WHERE key=$1', [CONFIG_KEY]); return r?.value ? JSON.parse(r.value) : {}; };
+async function saveHrConfig(req, cfg, entry) {
+  await run('INSERT INTO settings(key,value,updated_at) VALUES($1,$2,NOW()::TEXT) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()::TEXT', [CONFIG_KEY, JSON.stringify(cfg)]);
+  const actor = await one('SELECT full_name, display_name, email FROM users WHERE id=$1', [req.currentUser.id]);
+  const id = uuidv4();
+  await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'HrEmailAudit',$2,'active',$3)", [id, req.currentUser.id,
+    JSON.stringify({ id, at: new Date().toISOString(), actor_id: req.currentUser.id, actor_name: actor?.display_name || actor?.full_name || actor?.email || 'Admin', ...entry })]);
+  clearHrMailCache();
+}
+const handle = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error('[hr-emails]', e.message); res.status(500).json({ error: 'Could not complete that - please try again' }); } };
+
+router.get('/hr-emails', adminOnly, handle(async (_req, res) => {
+  const cfg = await readHrConfig();
+  const hr = await all(HR_USERS_SQL);
+  const accounts = hr.map((u) => ({ user_id: u.id, name: u.display_name || u.full_name || u.email, login_email: u.email, email: cfg.mappings?.[u.id]?.email || '', updated_at: cfg.mappings?.[u.id]?.updated_at || null, active: true }));
+  for (const [uid, m] of Object.entries(cfg.mappings || {})) {   // mappings of people who are no longer active HR: shown so they can be removed
+    if (hr.some((u) => u.id === uid)) continue;
+    const u = await one('SELECT email, former_email, full_name, display_name FROM users WHERE id=$1', [uid]);
+    accounts.push({ user_id: uid, name: u?.display_name || u?.full_name || 'Removed account', login_email: u?.former_email || u?.email || '', email: m.email, updated_at: m.updated_at, active: false });
+  }
+  const audit = (await all("SELECT data FROM entities WHERE type='HrEmailAudit' ORDER BY created_at DESC LIMIT 100")).map((r) => JSON.parse(r.data));
+  res.json({ accounts, cc_enabled: cfg.cc_enabled !== false, excluded_types: cfg.excluded_types || [], optional_types: OPTIONAL_TYPES, audit });
+}));
+
+router.put('/hr-emails/:userId', adminOnly, handle(async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!validEmail(email)) return res.status(400).json({ error: 'Enter a valid email address, for example name@maxvoltenergy.com' });
+  const u = (await all(HR_USERS_SQL)).find((x) => x.id === req.params.userId);
+  if (!u) return res.status(404).json({ error: 'That is not an active HR account' });
+  const cfg = await readHrConfig();
+  const clash = Object.entries(cfg.mappings || {}).find(([uid, m]) => uid !== u.id && m.email === email);
+  if (clash) return res.status(400).json({ error: 'That address is already mapped to another HR account' });
+  const owner = await one('SELECT id FROM users WHERE lower(email)=$1 AND id<>$2', [email, u.id]);
+  if (owner) return res.status(400).json({ error: 'That address is the login of a different account - use the personal mailbox of this HR account' });
+  const previous = cfg.mappings?.[u.id]?.email || '';
+  if (previous === email) return res.json({ success: true, unchanged: true });
+  cfg.mappings = { ...(cfg.mappings || {}), [u.id]: { email, updated_at: new Date().toISOString(), updated_by: req.currentUser.id } };
+  await saveHrConfig(req, cfg, { action: previous ? 'updated' : 'added', hr_user_id: u.id, hr_name: u.display_name || u.full_name || u.email, previous_email: previous, new_email: email });
+  res.json({ success: true });
+}));
+
+router.delete('/hr-emails/:userId', adminOnly, handle(async (req, res) => {
+  const cfg = await readHrConfig();
+  const m = cfg.mappings?.[req.params.userId];
+  if (!m) return res.status(404).json({ error: 'No email address is mapped for that account' });
+  const u = await one('SELECT email, former_email, full_name, display_name FROM users WHERE id=$1', [req.params.userId]);
+  delete cfg.mappings[req.params.userId];
+  await saveHrConfig(req, cfg, { action: 'removed', hr_user_id: req.params.userId, hr_name: u?.display_name || u?.full_name || u?.email || 'Removed account', previous_email: m.email, new_email: '' });
+  res.json({ success: true });
+}));
+
+router.put('/hr-email-options', adminOnly, handle(async (req, res) => {
+  const cfg = await readHrConfig();
+  const next = { cc_enabled: req.body?.cc_enabled !== false, excluded_types: (Array.isArray(req.body?.excluded_types) ? req.body.excluded_types : []).filter((k) => OPTIONAL_TYPES.some((t) => t.key === k)) };
+  const describe = (c) => `copy ${c.cc_enabled !== false ? 'on' : 'off'}; not copied: ${(c.excluded_types || []).join(', ') || 'none'}`;
+  if (describe(cfg) === describe(next)) return res.json({ success: true, unchanged: true });
+  const before = describe(cfg);
+  await saveHrConfig(req, { ...cfg, ...next }, { action: 'options', previous_email: before, new_email: describe(next) });
+  res.json({ success: true });
+}));
 
 // ── Celebration alert recipients (birthday / work-anniversary emails) ─────
 const CELEBRATION_KEY = 'celebration_email_config';
