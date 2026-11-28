@@ -643,7 +643,7 @@ export function computeVisitors(ctx, model, scope, from, to, today) {
     if (v.purpose) c.byPurpose[v.purpose] = (c.byPurpose[v.purpose] || 0) + 1;
     if (v.status === 'checked_out') c.checkedOut++;
     if (v.status === 'pending_approval') c.pendingApproval++;
-    const ci = ts(v.check_in_time), co = ts(v.check_out_time);
+    const ci = ts(v.check_in_time), co = v.auto_checked_out ? null : ts(v.check_out_time);   // an automatic closing is not an exit time
     let dur = null;
     if (ci != null && co != null && co > ci) { dur = Math.round((co - ci) / 60000); c.durations.push(dur); }
     const exp = ts(v.expected_arrival) != null && ts(v.expected_departure) != null ? Math.round((ts(v.expected_departure) - ts(v.expected_arrival)) / 60000) : null;
@@ -653,7 +653,7 @@ export function computeVisitors(ctx, model, scope, from, to, today) {
       if (d < today || (ci != null && now - ci > cfg.visitorOpenHours * 3600000)) { c.missingCheckout++; issues.push({ kind: 'Missing check-out', visitor: v.visitor_name || '', host: host?.name || v.host_name || '', dept: dp, date: d, why: 'Checked in but never checked out.', action: 'Security to confirm the visitor left and close the record.' }); }
     }
     if (v.mobile_number) byMobile[v.mobile_number] = (byMobile[v.mobile_number] || 0) + 1;
-    rows.push({ type: kind, visitor: v.visitor_name || '', company: v.company || '', mobile: v.mobile_number || '', host: host?.name || v.host_name || '', dept: dp, purpose: v.purpose || '', status: label(v.status), date: d, in: v.check_in_time || '', out: v.check_out_time || '', durationMin: dur, expectedMin: exp });
+    rows.push({ type: kind, visitor: v.visitor_name || '', company: v.company || '', mobile: v.mobile_number || '', host: host?.name || v.host_name || '', dept: dp, purpose: v.purpose || '', status: label(v.status), date: d, in: v.check_in_time || '', out: v.auto_checked_out ? '' : v.check_out_time || '', durationMin: dur, expectedMin: exp });
   }
   c.repeatVisitors = Object.values(byMobile).filter(n => n > 1).length;
   c.avgDurationMin = c.durations.length ? Math.round(mean(c.durations)) : null;

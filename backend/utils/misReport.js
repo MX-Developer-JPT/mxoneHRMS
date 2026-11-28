@@ -243,7 +243,7 @@ function writeVisitors(wb, D, scopeLabel) {
   section(ws, 'Visitor log');
   table(ws, ['Type', 'Visitor', 'Company', 'Mobile', 'Host', 'Host department', 'Purpose', 'Location', 'Status', 'Visit date', 'In', 'Out'],
     V.map(v => [v.kind, v.visitor_name || '', v.company || '', v.mobile_number || '', v.host_name || '', v.hostDept, v.purpose || '', v.location_name || '', label(v.status),
-      fmtD(String(v.expected_arrival || v.check_in_time || '').slice(0, 10)), fmtT(v.check_in_time), fmtT(v.check_out_time)]),
+      fmtD(String(v.expected_arrival || v.check_in_time || '').slice(0, 10)), fmtT(v.check_in_time), v.auto_checked_out ? 'Not recorded' : fmtT(v.check_out_time)]),
     [14, 24, 22, 15, 22, 20, 28, 20, 16, 14, 11, 11]);
 }
 

@@ -21,6 +21,7 @@ import {
   parseInvitationCode, last10, cleanText, istNowIso, istNowMs, validateVisit, publicVisit, safePhotoUrl, idReference, ID_TYPES,
   durationToDeparture, groupFields, makeLimiter, generatePassword, summariseByLocation, MESSAGES,
 } from '../utils/kiosk.js';
+import { withEvent } from '../utils/visitorRecord.js';
 
 // A different secret from user tokens: verifying a user token here, or a kiosk token in auth.js, always fails.
 const KIOSK_SECRET = createHash('sha256').update('maxvolt-kiosk:' + JWT_SECRET).digest('hex');
@@ -225,7 +226,9 @@ kioskRouter.post('/checkin', async (req, res) => {
 
     const photo = safePhotoUrl(req.body?.photo_url);
     const now = istNowIso();
-    const upd = {
+    const restricted = await one("SELECT id FROM entities WHERE type='BlockedVisitor' AND right(regexp_replace(data::jsonb->>'mobile_number','\\D','','g'),10)=$1", [last10(v.mobile_number)]);
+    if (restricted) { await writeLog(kiosk, 'check_in', { visitor_id: v.id, result: 'restricted', ip }); return res.json({ success: false, code: 'RESTRICTED', error: 'We are unable to check you in. Please speak to the reception.' }); }
+    let upd = {
       ...v, status: 'checked_in', check_in_time: now, check_in_by: null, check_in_by_name: `Kiosk — ${kiosk.name}`,
       checked_in_via_kiosk_id: kiosk.id, checked_in_via_kiosk_name: kiosk.name,
       photo_url: photo || v.photo_url || '',
@@ -233,6 +236,7 @@ kioskRouter.post('/checkin', async (req, res) => {
       vehicle_number: cleanText(req.body?.vehicle_number, 20).toUpperCase() || v.vehicle_number || '',
       declaration_accepted_at: now,
     };
+    upd = withEvent(upd, 'checked_in', { by_name: `Kiosk — ${kiosk.name}`, via: 'kiosk' });
     // Atomic: only moves an approved visit; a second tap / second kiosk can't check the same visitor in twice.
     const r = await q("UPDATE entities SET status='checked_in', data=$1, updated_at=NOW()::TEXT WHERE id=$2 AND type='Visitor' AND status='approved'", [JSON.stringify(upd), v.id]);
     if (!r.rowCount) { await writeLog(kiosk, 'check_in', { visitor_id: v.id, result: 'checked_in', detail: 'duplicate prevented', ip }); return res.json({ success: false, code: 'checked_in', error: MESSAGES.checked_in }); }
@@ -251,7 +255,7 @@ kioskRouter.post('/checkout', async (req, res) => {
     const v = row ? JSON.parse(row.data) : null;
     const verdict = validateVisit(v, kiosk.location_name, 'checkout');
     if (!verdict.ok) { await writeLog(kiosk, 'check_out', { visitor_id: t.vid, result: verdict.code, ip }); return res.json({ success: false, code: verdict.code, error: verdict.message }); }
-    const upd = { ...v, status: 'checked_out', check_out_time: istNowIso(), check_out_by: null, check_out_by_name: `Kiosk — ${kiosk.name}`, checked_out_via_kiosk_id: kiosk.id };
+    const upd = withEvent({ ...v, status: 'checked_out', check_out_time: istNowIso(), check_out_by: null, check_out_by_name: `Kiosk — ${kiosk.name}`, checked_out_via_kiosk_id: kiosk.id }, 'checked_out', { by_name: `Kiosk — ${kiosk.name}`, via: 'kiosk' });
     const r = await q("UPDATE entities SET status='checked_out', data=$1, updated_at=NOW()::TEXT WHERE id=$2 AND type='Visitor' AND status='checked_in'", [JSON.stringify(upd), v.id]);
     if (!r.rowCount) return res.json({ success: false, code: 'checked_out', error: MESSAGES.checked_out });
     await writeLog(kiosk, 'check_out', { visitor_id: v.id, result: 'ok', ip });
@@ -325,8 +329,8 @@ kioskRouter.post('/walkin', async (req, res) => {
     }
 
     const id = uuidv4(); const nowMs = istNowMs();
-    const data = {
-      id, visitor_name: name, mobile_number: mobile, visitor_email: email, company,
+    let data = {
+      id, registered_at: new Date(nowMs - 5.5 * 3600000).toISOString(), visitor_name: name, mobile_number: mobile, visitor_email: email, company,
       visitor_category: ['guest', 'vendor', 'client', 'interview', 'delivery', 'other'].includes(b.visitor_category) ? b.visitor_category : 'guest',
       purpose, host_user_id: host.user_id, host_name: host.name, host_department: host.department || '',
       created_by: null, created_by_name: `Kiosk — ${kiosk.name}`,
@@ -338,6 +342,7 @@ kioskRouter.post('/walkin', async (req, res) => {
       declaration_accepted_at: istNowIso(),
       status: 'pending_approval',
     };
+    data = withEvent(data, 'registered', { by_name: `Kiosk — ${kiosk.name}`, via: 'kiosk' }, data.registered_at);
     await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Visitor',$2,'pending_approval',$3)", [id, host.user_id, JSON.stringify(data)]);
     await writeLog(kiosk, 'walkin_register', { visitor_id: id, result: 'pending_approval', detail: `host ${host.name}`, ip });
     await notify(host.user_id, { title: 'Visitor Waiting at Gate', message: `${name}${grp.visitor_count > 1 ? ` + ${grp.visitor_count - 1} more` : ''}${company ? ` from ${company}` : ''}${hasVehicle ? ` (vehicle ${vehicle})` : ''} is at the ${kiosk.location_name} kiosk to meet you — please approve or reject.`, type: 'info', link: '/MyVisitors' });

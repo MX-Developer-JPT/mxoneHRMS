@@ -11,6 +11,7 @@ import { PROTECTED_FIELDS } from '../utils/confirmationRules.js';
 import { isRuledOd } from '../utils/odRules.js';
 import { scaleContent, renderOnOnePage, fitScale } from '../utils/pdfFit.js';
 import { snapshotBefore } from '../utils/regularisationRestore.js';
+import { withEvent, visitTimeline, exitTime, istText, EVENT_LABELS } from '../utils/visitorRecord.js';
 import { flagLeftWithoutGatePass, leftWithoutGatePass, buildLeftWorkbook } from '../utils/leftWithoutGatePass.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
 import { resolveSigner, signatoryNode, signatoryHtml, parseSignatoryBlock } from '../utils/signatory.js';
@@ -21102,6 +21103,23 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       return null;
     }
 
+    // the sign-in token carries no name, so the person's name is read from the database
+    async function visitorActorName(userId) {
+      const r = await one("SELECT u.full_name, u.display_name, u.email, e.data::jsonb->>'display_name' AS emp FROM users u LEFT JOIN entities e ON e.type='Employee' AND e.user_id=u.id WHERE u.id=$1 LIMIT 1", [userId]);
+      return r?.emp || r?.display_name || r?.full_name || r?.email || '';
+    }
+    // a restricted number is recognised however it was typed (+91, spaces): the last 10 digits identify it
+    async function isRestrictedMobile(mobile) {
+      const digits = String(mobile || '').replace(/\D/g, '').slice(-10);
+      return !!digits && !!(await one("SELECT id FROM entities WHERE type='BlockedVisitor' AND right(regexp_replace(data::jsonb->>'mobile_number','\\D','','g'),10)=$1 LIMIT 1", [digits]));
+    }
+    // moves a visit on only if it is still in the status it was read in, so two people acting at once cannot overwrite times
+    async function moveVisit(rowId, from, next) {
+      const r = await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3 AND type='Visitor' AND status=$4", [next.status, JSON.stringify(next), rowId, from]);
+      return r.rowCount > 0;
+    }
+    function changedMeanwhile() { return 'This visit was just updated by someone else. Refresh and try again.'; }   // a function: constants here are not initialised in later cases
+
     async function getGateAdminUserIdsForLocation(locationName) {
       const rows = await all("SELECT id FROM users WHERE COALESCE(NULLIF(custom_role,''), role) IN ('gate_admin','front_desk_admin')");
       const out = [];
@@ -21112,62 +21130,47 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       return out;
     }
 
+    // The person who invites is the host. The invitation needs no further approval, and its QR pass is issued at once.
     case 'createVisitorInvite': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { visitor_name, mobile_number, visitor_email, company, visitor_category, purpose,
-        expected_arrival, expected_departure, host_user_id: cviHostId,
-        location_name: cviLocation, vehicle_number, meeting_location, special_instructions } = p;
+        expected_arrival, expected_departure, location_name: cviLocation, vehicle_number, meeting_location, special_instructions } = p;
       const { groupFields: cviGroupFn } = await import('../utils/kiosk.js');
       const cviGroup = cviGroupFn(p.visitor_count, p.companion_names);
       if (!visitor_name || !mobile_number || !purpose || !expected_arrival) {
         return res.json({ success: false, error: 'Visitor name, mobile number, purpose and expected arrival are required' });
       }
+      if (String(mobile_number).replace(/\D/g, '').length < 10) return res.json({ success: false, error: 'Enter a mobile number of at least 10 digits' });
+      const cviWhen = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+      if (!cviWhen.test(String(expected_arrival))) return res.json({ success: false, error: 'Enter the expected arrival date and time' });
+      if (expected_departure && (!cviWhen.test(String(expected_departure)) || String(expected_departure).slice(0, 16) <= String(expected_arrival).slice(0, 16))) {
+        return res.json({ success: false, error: 'Expected departure must be after the expected arrival' });
+      }
+      if (String(expected_arrival).slice(0, 10) < new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10)) return res.json({ success: false, error: 'The expected arrival date is in the past' });
       const cviLocErr = await validateVisitorLocation(cviLocation);
       if (cviLocErr) return res.json({ success: false, error: cviLocErr });
-      const cviBlocked = await one("SELECT id FROM entities WHERE type='BlockedVisitor' AND data::jsonb->>'mobile_number'=$1", [String(mobile_number).trim()]);
-      if (cviBlocked) return res.json({ success: false, error: 'This visitor is restricted — contact HR/admin to proceed', code: 'RESTRICTED' });
+      if (await isRestrictedMobile(mobile_number)) return res.json({ success: false, error: 'This visitor is restricted — contact HR/admin to proceed', code: 'RESTRICTED' });
 
-      const hostId = cviHostId || cu.id;
-      let hostName = cu.full_name;
-      if (hostId !== cu.id) {
-        const hostUser = await one("SELECT full_name FROM users WHERE id=$1", [hostId]);
-        if (!hostUser) return res.json({ success: false, error: 'Selected host not found' });
-        hostName = hostUser.full_name;
-      }
-
+      const hostName = await visitorActorName(cu.id);
       const cviId = uuidv4();
-      // Inviting a visitor to meet YOURSELF is auto-approved — requiring a
-      // host to approve their own request is pure friction for the common
-      // case, and the proposal's own workflow diagram phrases this step as
-      // "Employee/Host requests OR approves the visit" — i.e. these collapse
-      // into one step when they're the same person. Only a THIRD-PARTY host
-      // (e.g. a receptionist inviting on a manager's behalf) goes through a
-      // real approval step below.
-      const selfHosted = hostId === cu.id;
       const cviNow = new Date().toISOString();
-      const cviData = {
+      let cviData = {
         id: cviId, visitor_name, mobile_number: String(mobile_number).trim(), visitor_email: visitor_email || '', company: company || '',
         visitor_category: visitor_category || 'guest', purpose,
-        host_user_id: hostId, host_name: hostName,
-        created_by: cu.id, created_by_name: cu.full_name,
+        host_user_id: cu.id, host_name: hostName,
+        created_by: cu.id, created_by_name: hostName, registered_at: cviNow,
         source: 'pre_registered',
         location_name: cviLocation,
         expected_arrival, expected_departure: expected_departure || null,
         vehicle_number: vehicle_number || '', meeting_location: meeting_location || '', special_instructions: special_instructions || '',
         ...cviGroup,
-        status: selfHosted ? 'approved' : 'pending_approval',
-        qr_code: selfHosted ? uuidv4() : null,
-        ...(selfHosted ? { approved_by: cu.id, approved_by_name: cu.full_name, approved_at: cviNow } : {}),
+        status: 'approved', qr_code: uuidv4(), approved_by: cu.id, approved_by_name: hostName, approved_at: cviNow,
       };
-      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Visitor',$2,$3,$4)", [cviId, hostId, cviData.status, JSON.stringify(cviData)]);
-      if (!selfHosted) {
-        await notify(hostId, { title: 'Visitor Approval Needed', message: `${cu.full_name} invited ${visitor_name}${company ? ` (${company})` : ''} to meet you at ${cviLocation} — please approve or reject.`, type: 'info', link: '/MyVisitors' });
-      }
-      // Route to the Gate Admin(s) assigned to this location, in addition to
-      // the host, so it surfaces in their Visitor Management queue right away
-      // regardless of the host's own approval decision timing.
+      cviData = withEvent(cviData, 'invited', { by: cu.id, by_name: hostName }, cviNow);
+      cviData = withEvent(cviData, 'approved', { by: cu.id, by_name: hostName, note: 'Approved with the invitation' }, cviNow);
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Visitor',$2,$3,$4)", [cviId, cu.id, cviData.status, JSON.stringify(cviData)]);
       for (const gid of await getGateAdminUserIdsForLocation(cviLocation)) {
-        await notify(gid, { title: 'New Visitor Request', message: `${visitor_name}${company ? ` (${company})` : ''} invited to ${cviLocation} — awaiting host approval.`, type: 'info', link: '/VisitorManagement' });
+        if (gid !== cu.id) await notify(gid, { title: 'Visitor Expected', message: `${visitor_name}${company ? ` (${company})` : ''} is expected at ${cviLocation} on ${String(expected_arrival).slice(0, 16).replace('T', ' ')} to meet ${hostName}.`, type: 'info', link: '/VisitorManagement' });
       }
       return res.json({ success: true, visitor: cviData });
     }
@@ -21183,18 +21186,19 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       const rwvLocErr = await validateVisitorLocation(rwvLocation);
       if (rwvLocErr) return res.json({ success: false, error: rwvLocErr });
       if (!(await canOperateAtLocation(cu, rwvLocation))) return res.status(403).json({ error: `You are not assigned to ${rwvLocation}` });
-      const rwvBlocked = await one("SELECT id FROM entities WHERE type='BlockedVisitor' AND data::jsonb->>'mobile_number'=$1", [String(mobile_number).trim()]);
-      if (rwvBlocked) return res.json({ success: false, error: 'This visitor is restricted — contact HR/admin to proceed', code: 'RESTRICTED' });
+      if (await isRestrictedMobile(mobile_number)) return res.json({ success: false, error: 'This visitor is restricted — contact HR/admin to proceed', code: 'RESTRICTED' });
 
-      const hostUser = await one("SELECT full_name FROM users WHERE id=$1", [rwvHostId]);
-      if (!hostUser) return res.json({ success: false, error: 'Selected host not found' });
+      if (!(await one('SELECT id FROM users WHERE id=$1', [rwvHostId]))) return res.json({ success: false, error: 'Selected host not found' });
+      const rwvHostName = await visitorActorName(rwvHostId);
+      const rwvActor = await visitorActorName(cu.id);
+      const rwvNow = new Date().toISOString();
 
       const rwvId = uuidv4();
-      const rwvData = {
+      let rwvData = {
         id: rwvId, visitor_name, mobile_number: String(mobile_number).trim(), visitor_email: visitor_email || '', company: company || '',
         visitor_category: visitor_category || 'guest', purpose,
-        host_user_id: rwvHostId, host_name: hostUser.full_name,
-        created_by: cu.id, created_by_name: cu.full_name,
+        host_user_id: rwvHostId, host_name: rwvHostName,
+        created_by: cu.id, created_by_name: rwvActor, registered_at: rwvNow,
         source: 'walk_in',
         location_name: rwvLocation,
         // IST-digits-as-UTC (matches Attendance's check_in_time convention)
@@ -21205,6 +21209,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         ...rwvGroup,
         status: 'pending_approval',
       };
+      rwvData = withEvent(rwvData, 'registered', { by: cu.id, by_name: rwvActor, via: 'gate' }, rwvNow);
       await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Visitor',$2,'pending_approval',$3)", [rwvId, rwvHostId, JSON.stringify(rwvData)]);
       await notify(rwvHostId, { title: 'Visitor Waiting at Gate', message: `${visitor_name}${company ? ` from ${company}` : ''} is at the ${rwvLocation} gate to meet you — please approve or reject.`, type: 'info', link: '/MyVisitors' });
       return res.json({ success: true, visitor: rwvData });
@@ -21226,14 +21231,15 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (!avaAuthorized) return res.status(403).json({ error: 'Only the host, or an operator assigned to this location, may approve this visitor' });
 
       const avaNow = new Date().toISOString();
+      const avaName = await visitorActorName(cu.id);
       if (avaAction === 'approve') {
-        const upd = { ...av, status: 'approved', qr_code: uuidv4(), approved_by: cu.id, approved_by_name: cu.full_name, approved_at: avaNow };
-        await run("UPDATE entities SET status='approved', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), avaId]);
+        const upd = withEvent({ ...av, status: 'approved', qr_code: uuidv4(), approved_by: cu.id, approved_by_name: avaName, approved_at: avaNow }, 'approved', { by: cu.id, by_name: avaName }, avaNow);
+        if (!(await moveVisit(avaId, 'pending_approval', upd))) return res.json({ success: false, error: changedMeanwhile() });
         await notify(av.created_by, { title: 'Visitor Approved', message: `${av.visitor_name} has been approved and can now check in at the ${av.location_name} gate.`, type: 'success', link: '/MyVisitors' });
         return res.json({ success: true, status: 'approved' });
       }
-      const upd = { ...av, status: 'rejected', rejected_by: cu.id, rejected_by_name: cu.full_name, rejected_at: avaNow, rejection_reason: avaNote || '' };
-      await run("UPDATE entities SET status='rejected', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), avaId]);
+      const upd = withEvent({ ...av, status: 'rejected', rejected_by: cu.id, rejected_by_name: avaName, rejected_at: avaNow, rejection_reason: avaNote || '' }, 'rejected', { by: cu.id, by_name: avaName, note: avaNote }, avaNow);
+      if (!(await moveVisit(avaId, 'pending_approval', upd))) return res.json({ success: false, error: changedMeanwhile() });
       await notify(av.created_by, { title: 'Visitor Rejected', message: `${av.visitor_name}'s visit was rejected${avaNote ? `: ${avaNote}` : '.'}`, type: 'error', link: '/MyVisitors' });
       return res.json({ success: true, status: 'rejected' });
     }
@@ -21247,8 +21253,9 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       const cnvAuthorized = cv.created_by === cu.id || cv.host_user_id === cu.id || await canOperateAtLocation(cu, cv.location_name);
       if (!cnvAuthorized) return res.status(403).json({ error: 'Access denied' });
       if (!['pending_approval', 'approved'].includes(cv.status)) return res.json({ success: false, error: `Cannot cancel a visit that is already ${(cv.status || '').replace(/_/g, ' ')}` });
-      const upd = { ...cv, status: 'cancelled', cancelled_by: cu.id, cancelled_by_name: cu.full_name, cancelled_at: new Date().toISOString() };
-      await run("UPDATE entities SET status='cancelled', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), cnvId]);
+      const cnvName = await visitorActorName(cu.id), cnvNow = new Date().toISOString();
+      const upd = withEvent({ ...cv, status: 'cancelled', cancelled_by: cu.id, cancelled_by_name: cnvName, cancelled_at: cnvNow }, 'cancelled', { by: cu.id, by_name: cnvName }, cnvNow);
+      if (!(await moveVisit(cnvId, cv.status, upd))) return res.json({ success: false, error: changedMeanwhile() });
       return res.json({ success: true });
     }
 
@@ -21262,7 +21269,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const { qr_code: vqrCode } = p;
       if (!vqrCode) return res.json({ success: false, status: 'invalid', message: 'No QR code provided' });
-      const vqrRow = await one("SELECT data FROM entities WHERE type='Visitor' AND data::jsonb->>'qr_code'=$1", [vqrCode]);
+      const vqrRow = await one("SELECT id,data FROM entities WHERE type='Visitor' AND data::jsonb->>'qr_code'=$1", [vqrCode]);
       if (!vqrRow) return res.json({ success: true, status: 'invalid', message: 'Pass not recognized' });
       const v = JSON.parse(vqrRow.data);
       if (!(await canOperateAtLocation(cu, v.location_name))) {
@@ -21274,12 +21281,18 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       else if (v.status === 'checked_out') status = 'already_used';
       else if (v.status === 'checked_in') status = 'checked_in';
       else if (v.status === 'pending_approval') status = 'pending_approval';
+      let message;
       if (v.status === 'approved') {
-        const nowIstMs = Date.now() + 5.5 * 3600000;
-        const expiryMs = v.expected_departure ? new Date(v.expected_departure.replace(/Z$/, '')).getTime() : null;
-        status = (expiryMs && nowIstMs > expiryMs) ? 'expired' : 'valid';
+        const verdict = (await import('../utils/kiosk.js')).validateVisit(v, v.location_name, 'checkin');
+        status = verdict.ok ? 'valid' : verdict.code;
+        if (!verdict.ok) message = verdict.message;
       }
-      return res.json({ success: true, status, visitor: v });
+      // the scan itself is part of the visit's history
+      if (await hasRole(cu, [...MGR_ROLES, 'gate_admin', 'front_desk_admin'])) {
+        const seen = withEvent(v, 'pass_scanned', { by: cu.id, by_name: await visitorActorName(cu.id), via: 'gate', note: status });
+        await moveVisit(vqrRow.id, v.status, seen);
+      }
+      return res.json({ success: true, status, message, visitor: v });
     }
 
     case 'visitorCheckIn': {
@@ -21298,14 +21311,20 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (v.status === 'checked_out') return res.json({ success: false, error: 'This visit already completed (checked out)' });
       if (v.status === 'cancelled') return res.json({ success: false, error: 'This visit was cancelled' });
 
+      // the same rules as the kiosk: only on the visit day, before the expected departure, and never a restricted number
+      const vciVerdict = (await import('../utils/kiosk.js')).validateVisit(v, v.location_name, 'checkin');
+      if (!vciVerdict.ok) return res.json({ success: false, error: vciVerdict.code === 'expired' ? 'This invitation has expired. Ask the host to invite the visitor again.' : vciVerdict.message });
+      if (await isRestrictedMobile(v.mobile_number)) return res.json({ success: false, error: 'This visitor is restricted — contact HR/admin to proceed', code: 'RESTRICTED' });
+
       // IST-digits-as-UTC (matches Attendance's check_in_time convention) —
       // this is displayed via safeTime on the frontend.
-      const upd = {
-        ...v, status: 'checked_in', check_in_time: new Date(Date.now() + 5.5 * 3600000).toISOString(), check_in_by: cu.id, check_in_by_name: cu.full_name,
+      const vciName = await visitorActorName(cu.id), vciAt = new Date();
+      const upd = withEvent({
+        ...v, status: 'checked_in', check_in_time: new Date(vciAt.getTime() + 5.5 * 3600000).toISOString(), check_in_by: cu.id, check_in_by_name: vciName,
         photo_url: vciPhoto || v.photo_url || '', id_proof_reference: vciIdProof || v.id_proof_reference || '',
         vehicle_number: vciVeh || v.vehicle_number || '',
-      };
-      await run("UPDATE entities SET status='checked_in', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), vciRow.id]);
+      }, 'checked_in', { by: cu.id, by_name: vciName, via: 'gate' }, vciAt.toISOString());
+      if (!(await moveVisit(vciRow.id, 'approved', upd))) return res.json({ success: false, error: changedMeanwhile() });
       await notify(v.host_user_id, { title: 'Your Visitor Has Arrived', message: `${v.visitor_name}${v.company ? ` (${v.company})` : ''} has checked in at the ${v.location_name} gate.`, type: 'info', link: '/MyVisitors' });
       return res.json({ success: true, visitor: upd });
     }
@@ -21323,8 +21342,9 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (v.status !== 'checked_in') return res.json({ success: false, error: v.status === 'checked_out' ? 'Already checked out' : 'Visitor is not currently checked in' });
 
       // IST-digits-as-UTC, same reasoning as check_in_time above.
-      const upd = { ...v, status: 'checked_out', check_out_time: new Date(Date.now() + 5.5 * 3600000).toISOString(), check_out_by: cu.id, check_out_by_name: cu.full_name };
-      await run("UPDATE entities SET status='checked_out', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), vcoRow.id]);
+      const vcoName = await visitorActorName(cu.id), vcoAt = new Date();
+      const upd = withEvent({ ...v, status: 'checked_out', check_out_time: new Date(vcoAt.getTime() + 5.5 * 3600000).toISOString(), check_out_by: cu.id, check_out_by_name: vcoName }, 'checked_out', { by: cu.id, by_name: vcoName, via: 'gate' }, vcoAt.toISOString());
+      if (!(await moveVisit(vcoRow.id, 'checked_in', upd))) return res.json({ success: false, error: changedMeanwhile() });
       return res.json({ success: true, visitor: upd });
     }
 
@@ -21336,10 +21356,10 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     case 'exportVisitors': {
       if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
       const { from: evFrom, to: evTo, location: evLoc, status: evStatus, source: evSource, category: evCat, search: evSearch } = p;
-      const evRows = await all("SELECT data FROM entities WHERE type='Visitor' ORDER BY created_at DESC");
+      const evRows = await all("SELECT data, created_at FROM entities WHERE type='Visitor' ORDER BY created_at DESC");
       const q = String(evSearch || '').trim().toLowerCase();
       const visitDate = (v) => String(v.expected_arrival || v.check_in_time || '').slice(0, 10);
-      const evList = evRows.map(r => JSON.parse(r.data)).filter(v => {
+      const evList = evRows.map(r => ({ created_at: `${String(r.created_at).replace(' ', 'T').slice(0, 23)}Z`, ...JSON.parse(r.data) })).filter(v => {
         const d = visitDate(v);
         if (evFrom && d < evFrom) return false;
         if (evTo && d > evTo) return false;
@@ -21360,8 +21380,9 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         if (isNaN(d.getTime())) return String(t);
         const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
         const h = d.getHours() % 12 || 12;
-        return `${String(d.getDate()).padStart(2, '0')} ${mon} ${d.getFullYear()} ${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() >= 12 ? 'PM' : 'AM'}`;
+        return `${String(d.getDate()).padStart(2, '0')} ${mon} ${d.getFullYear()} ${h}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')} ${d.getHours() >= 12 ? 'PM' : 'AM'}`;
       };
+      const evInstant = (t) => istText(t);   // approved / rejected / registered are true instants
       const evMins = (a, b) => {
         if (!a || !b) return '';
         const m = Math.round((new Date(String(b).replace(/Z$/, '')) - new Date(String(a).replace(/Z$/, ''))) / 60000);
@@ -21377,7 +21398,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         ['Expected Arrival / Registered', 22], ['Expected Departure', 22], ['Status', 18],
         ['Approved / Rejected By', 22], ['Approval Time', 22], ['Approval Note', 28],
         ['Check-In Time', 22], ['Checked-In By (Gate Admin)', 26], ['Check-Out Time', 22], ['Checked-Out By (Gate Admin)', 26], ['Duration (min)', 14],
-        ['Vehicle No.', 16], ['No. of Visitors', 12], ['Other Visitors', 28], ['ID Proof Reference', 22], ['Meeting Location', 20], ['Special Instructions', 30], ['Photo', 40],
+        ['Vehicle No.', 16], ['No. of Visitors', 12], ['Other Visitors', 28], ['ID Proof Reference', 22], ['Meeting Location', 20], ['Special Instructions', 30], ['Invited / Registered At', 22], ['Photo', 40],
       ];
       wsV.columns = cols.map(([header, width]) => ({ header, width }));
       const hdr = wsV.getRow(1);
@@ -21390,15 +21411,23 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
           v.visitor_name || '', v.mobile_number || '', v.visitor_email || '', v.company || '', evCatLabel[v.visitor_category] || v.visitor_category || '',
           v.purpose || '', v.host_name || '', v.location_name || '', v.created_by_name || '',
           evFmt(v.expected_arrival), evFmt(v.expected_departure), evStatusLabel[v.status] || v.status || '',
-          decided || '', evFmt(v.approved_at || v.rejected_at), v.rejection_reason || '',
-          evFmt(v.check_in_time), v.check_in_by_name || '', evFmt(v.check_out_time), v.check_out_by_name || '', evMins(v.check_in_time, v.check_out_time),
-          v.vehicle_number || '', v.visitor_count || 1, (v.companion_names || []).join(', '), v.id_proof_reference || '', v.meeting_location || '', v.special_instructions || '', v.photo_url || '',
+          decided || '', evInstant(v.rejected_at || v.approved_at), v.rejection_reason || '',
+          evFmt(v.check_in_time), v.check_in_by_name || '', v.auto_checked_out ? 'Not recorded' : evFmt(v.check_out_time), v.check_out_by_name || '', evMins(v.check_in_time, exitTime(v)),
+          v.vehicle_number || '', v.visitor_count || 1, (v.companion_names || []).join(', '), v.id_proof_reference || '', v.meeting_location || '', v.special_instructions || '',
+          evInstant(visitTimeline(v).find(e => e.action === 'invited' || e.action === 'registered')?.at), v.photo_url || '',
         ]);
         row.eachCell(c => { c.font = { size: 9 }; c.alignment = { vertical: 'top', wrapText: true }; c.border = { bottom: { style: 'hair', color: { argb: 'FFD1D5DB' } } }; });
         const photoCell = row.getCell(cols.length);
         if (/^https?:\/\//i.test(String(v.photo_url || ''))) photoCell.value = { text: 'View photo', hyperlink: v.photo_url };
       });
       wsV.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
+
+      // Every event of every listed visit, to the second
+      const wsE = wbV.addWorksheet('Event log', { views: [{ state: 'frozen', ySplit: 1 }] });
+      wsE.columns = [['Visitor Name', 24], ['Mobile', 15], ['Host', 24], ['Location / Gate', 18], ['Event', 34], ['Date & Time (IST)', 24], ['By', 26], ['Via', 14], ['Note', 30]].map(([header, width]) => ({ header, width }));
+      wsE.getRow(1).font = { bold: true };
+      for (const v of evList) for (const e of visitTimeline(v)) wsE.addRow([v.visitor_name || '', v.mobile_number || '', v.host_name || '', v.location_name || '', EVENT_LABELS[e.action] || e.action, istText(e.at), e.by_name || '', e.via || '', e.note || '']);
+      wsE.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
 
       // Summary sheet: counts by type, status and location for the filtered set.
       const wsS = wbV.addWorksheet('Summary');
@@ -21434,8 +21463,8 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     // someone else's behalf).
     case 'getMyVisitors': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-      const rows = await all("SELECT data FROM entities WHERE type='Visitor' AND (data::jsonb->>'created_by'=$1 OR data::jsonb->>'host_user_id'=$1) ORDER BY created_at DESC LIMIT 500", [cu.id]);
-      return res.json({ success: true, visitors: rows.map(r => JSON.parse(r.data)) });
+      const rows = await all("SELECT data, created_at FROM entities WHERE type='Visitor' AND (data::jsonb->>'created_by'=$1 OR data::jsonb->>'host_user_id'=$1) ORDER BY created_at DESC LIMIT 500", [cu.id]);
+      return res.json({ success: true, visitors: rows.map(r => ({ created_at: `${String(r.created_at).replace(' ', 'T').slice(0, 23)}Z`, ...JSON.parse(r.data) })) });
     }
 
     // Gate Admin / HR / admin / management read — the ONLY way (besides the
@@ -21445,8 +21474,8 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     // not just by what VisitorManagement.jsx chooses to render.
     case 'getVisitorsScoped': {
       if (!(await hasRole(cu, [...MGR_ROLES, 'gate_admin', 'front_desk_admin']))) return res.status(403).json({ error: 'Gate Admin/HR access required' });
-      const rows = await all("SELECT data FROM entities WHERE type='Visitor' ORDER BY created_at DESC LIMIT 2000");
-      let visitors = rows.map(r => JSON.parse(r.data));
+      const rows = await all("SELECT data, created_at FROM entities WHERE type='Visitor' ORDER BY created_at DESC LIMIT 2000");
+      let visitors = rows.map(r => ({ created_at: `${String(r.created_at).replace(' ', 'T').slice(0, 23)}Z`, ...JSON.parse(r.data) }));
       if (!(await hasRole(cu, MGR_ROLES))) {
         const assigned = await getGateAdminAssignedLocations(cu.id);
         if (assigned !== null) visitors = visitors.filter(v => assigned.includes(v.location_name));
@@ -21504,7 +21533,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         const mbvExisting = await one("SELECT id FROM entities WHERE type='BlockedVisitor' AND data::jsonb->>'mobile_number'=$1", [String(mbvMobile).trim()]);
         if (mbvExisting) return res.json({ success: false, error: 'This number is already restricted' });
         const mbvNewId = uuidv4();
-        const mbvData = { id: mbvNewId, mobile_number: String(mbvMobile).trim(), reason: mbvReason || '', blocked_by: cu.id, blocked_by_name: cu.full_name, blocked_at: new Date().toISOString() };
+        const mbvData = { id: mbvNewId, mobile_number: String(mbvMobile).trim(), reason: mbvReason || '', blocked_by: cu.id, blocked_by_name: await visitorActorName(cu.id), blocked_at: new Date().toISOString() };
         await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'BlockedVisitor',$2,'active',$3)", [mbvNewId, cu.id, JSON.stringify(mbvData)]);
         return res.json({ success: true, blocked: mbvData });
       }

@@ -30,7 +30,8 @@ export function cleanText(v, max = 120) {
 
 export const istNowMs = () => Date.now() + 5.5 * 3600000;
 export const istNowIso = () => new Date(istNowMs()).toISOString();
-const istDigitsMs = (s) => { const t = Date.parse(String(s || '')); return Number.isFinite(t) ? t : null; };
+// India clock digits, read as written whatever the server's time zone (a bare "2026-11-28T14:30" has no zone of its own)
+const istDigitsMs = (s) => { const str = String(s || ''); const t = Date.parse(/T/.test(str) && !/Z$|[+-]\d{2}:?\d{2}$/.test(str) ? `${str}Z` : str); return Number.isFinite(t) ? t : null; };
 
 const fmtDay = (iso) => {
   const d = new Date(String(iso).slice(0, 10) + 'T00:00:00Z');
@@ -76,7 +77,9 @@ export function validateVisit(v, kioskLocation, intent = 'checkin', nowMs = istN
   const day = String(v.expected_arrival || '').slice(0, 10);
   if (day) {
     const start = istDigitsMs(`${day}T00:00:00Z`);
-    const end = v.expected_departure ? istDigitsMs(v.expected_departure) : start + 86400000;
+    let end = v.expected_departure ? istDigitsMs(v.expected_departure) : start + 86400000;
+    // a walk-in's departure is counted from registration; waiting for the host must not expire the pass, so it lasts the day
+    if (v.source === 'walk_in' && start != null) end = Math.max(end ?? 0, start + 86400000);
     if (start != null && nowMs < start) return fail('not_yet', `This invitation is for ${fmtDay(day)}. Please come back on that day.`);
     if (end != null && nowMs > end) return fail('expired');
   }

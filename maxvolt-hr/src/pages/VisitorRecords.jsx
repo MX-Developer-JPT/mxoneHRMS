@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Users, Search, Download, Loader2, DoorOpen, UserCheck, Footprints, MailCheck, Clock, X } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
+import { visitTimeline, istText, exitTime, EVENT_LABELS } from '@/lib/visitorTimes';
 import { toast } from 'sonner';
 
 const STATUS_COLORS = {
@@ -28,12 +29,13 @@ const isWalkIn = (v) => (v.source || 'pre_registered') === 'walk_in';
 // Same "visit date" the server-side export filters on.
 const visitDate = (v) => String(v.expected_arrival || v.check_in_time || '').slice(0, 10);
 const durationMin = (v) => {
-  if (!v.check_in_time || !v.check_out_time) return null;
-  const m = Math.round((new Date(String(v.check_out_time).replace(/Z$/, '')) - new Date(String(v.check_in_time).replace(/Z$/, ''))) / 60000);
+  if (!v.check_in_time || !exitTime(v)) return null;
+  const m = Math.round((new Date(String(exitTime(v)).replace(/Z$/, '')) - new Date(String(v.check_in_time).replace(/Z$/, ''))) / 60000);
   return isFinite(m) && m >= 0 ? m : null;
 };
 const fmtDuration = (m) => (m == null ? '—' : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`);
 const fmt = (t, f = 'dd MMM yyyy, h:mm a') => (t ? safeDate(t, f) : '—');
+const outText = (v, f) => (v.auto_checked_out ? 'Not recorded' : fmt(v.check_out_time, f));
 
 function downloadBase64Xlsx(base64, filename) {
   const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
@@ -226,7 +228,7 @@ export default function VisitorRecords() {
                       <td className="px-3 py-2.5 max-w-[200px] truncate" title={v.purpose}>{v.purpose || '—'}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap">{fmt(v.expected_arrival)}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap">{fmt(v.check_in_time)}</td>
-                      <td className="px-3 py-2.5 whitespace-nowrap">{fmt(v.check_out_time)}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">{outText(v)}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap">{fmtDuration(durationMin(v))}</td>
                       <td className="px-3 py-2.5"><Badge className={STATUS_COLORS[v.status] || 'bg-gray-100 text-gray-700'}>{STATUS_LABELS[v.status] || v.status}</Badge></td>
                     </tr>
@@ -251,7 +253,7 @@ export default function VisitorRecords() {
                     <span className="text-xs text-gray-600">{v.location_name}</span>
                   </div>
                   <p className="text-xs text-gray-600">To meet <span className="font-medium">{v.host_name || '—'}</span>{v.purpose ? ` — ${v.purpose}` : ''}</p>
-                  <p className="text-[11px] text-gray-400">In {fmt(v.check_in_time, 'dd MMM, h:mm a')} · Out {fmt(v.check_out_time, 'dd MMM, h:mm a')}</p>
+                  <p className="text-[11px] text-gray-400">In {fmt(v.check_in_time, 'dd MMM, h:mm a')} · Out {outText(v, 'dd MMM, h:mm a')}</p>
                 </CardContent></Card>
               ))}
             </div>
@@ -305,13 +307,25 @@ export default function VisitorRecords() {
                 <Field label={isWalkIn(selected) ? 'Registered at gate' : 'Expected arrival'}>{fmt(selected.expected_arrival)}</Field>
                 <Field label="Expected departure">{fmt(selected.expected_departure)}</Field>
                 <Field label={selected.status === 'rejected' ? 'Rejected by' : 'Approved by'}>{selected.status === 'rejected' ? selected.rejected_by_name : selected.approved_by_name}</Field>
-                <Field label="Decision time">{fmt(selected.approved_at || selected.rejected_at)}</Field>
+                <Field label="Decision time">{istText(selected.rejected_at || selected.approved_at)}</Field>
                 {selected.rejection_reason && <div className="col-span-2"><Field label="Rejection reason">{selected.rejection_reason}</Field></div>}
-                <Field label="Checked in">{fmt(selected.check_in_time)}</Field>
+                <Field label="Checked in">{fmt(selected.check_in_time, 'dd MMM yyyy, h:mm:ss a')}</Field>
                 <Field label="Checked in by (gate admin)">{selected.check_in_by_name}</Field>
-                <Field label="Checked out">{fmt(selected.check_out_time)}</Field>
+                <Field label="Checked out">{outText(selected, 'dd MMM yyyy, h:mm:ss a')}</Field>
                 <Field label="Checked out by (gate admin)">{selected.check_out_by_name}</Field>
                 <Field label="Time on premises">{fmtDuration(durationMin(selected))}</Field>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-1">Every event (India time)</p>
+                <div className="border rounded-lg divide-y">
+                  {visitTimeline(selected).map((e, i) => (
+                    <div key={`${e.action}-${e.at}-${i}`} className="flex flex-wrap justify-between gap-x-3 px-3 py-1.5 text-xs">
+                      <span><b>{EVENT_LABELS[e.action] || e.action}</b>{e.by_name ? ` · ${e.by_name}` : ''}{e.note ? ` · ${e.note}` : ''}</span>
+                      <span className="text-gray-500">{istText(e.at)}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}

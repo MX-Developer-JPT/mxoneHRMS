@@ -224,6 +224,7 @@ export default function VisitorManagement() {
       const d = res.data || res;
       if (!d.success) { toast.error(d.message || 'Verification failed'); return; }
       if (d.status === 'wrong_location') { toast.error(d.message); return; }
+      if (['expired', 'not_yet'].includes(d.status)) { toast.error(d.message); return; }
       const msg = VERIFY_STATUS_MESSAGES[d.status];
       if (msg) { toast.error(msg); return; }
       handleResolvedVisitor(d.visitor);
@@ -317,7 +318,7 @@ export default function VisitorManagement() {
     const rows = filteredHistory.map(v => [
       v.visitor_name, v.mobile_number, v.company || '', v.location_name || '', v.purpose || '', v.host_name || '',
       STATUS_LABELS[v.status] || v.status, safeDate(v.expected_arrival, 'dd MMM yyyy h:mm a'),
-      v.check_in_time ? safeDate(v.check_in_time, 'dd MMM yyyy h:mm a') : '', v.check_out_time ? safeDate(v.check_out_time, 'dd MMM yyyy h:mm a') : '',
+      v.check_in_time ? safeDate(v.check_in_time, 'dd MMM yyyy h:mm:ss a') : '', v.auto_checked_out ? 'Not recorded' : v.check_out_time ? safeDate(v.check_out_time, 'dd MMM yyyy h:mm:ss a') : '',
       v.vehicle_number || '',
     ]);
     const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -351,7 +352,7 @@ export default function VisitorManagement() {
           </p>
           <p className="text-xs text-gray-500 mt-0.5">{v.purpose} · Host: {v.host_name}{v.source === 'walk_in' ? ' · Walk-in' : ''}</p>
           {v.status === 'checked_in' && <p className="text-xs text-green-600 mt-0.5">In: {safeTime(v.check_in_time)}{v.expected_departure ? ` · Expected out: ${safeDate(v.expected_departure, 'h:mm a')}` : ''}</p>}
-          {v.status === 'checked_out' && <p className="text-xs text-gray-500 mt-0.5">{safeTime(v.check_in_time)} → {safeTime(v.check_out_time)}</p>}
+          {v.status === 'checked_out' && <p className="text-xs text-gray-500 mt-0.5">{safeTime(v.check_in_time)} → {v.auto_checked_out ? 'exit not recorded' : safeTime(v.check_out_time)}</p>}
         </div>
         {canOperate && (
           <div className="flex gap-2 shrink-0">

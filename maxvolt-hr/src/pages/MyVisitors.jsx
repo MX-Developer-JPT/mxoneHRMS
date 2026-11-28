@@ -7,13 +7,11 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { safeDate, safeTime } from '@/lib/dateUtils';
 import { generateVisitorPassImage, downloadPass, sharePass } from '@/lib/visitorPass';
 import { toast } from 'sonner';
 import {
-  UserPlus, Users, Check, X, ChevronsUpDown, Car, MapPin, Clock,
+  UserPlus, Users, Check, X, Car, MapPin, Clock,
   Building2, Phone, QrCode, XCircle, Download, Share2, Mail,
 } from 'lucide-react';
 import VisitorQRCode from '@/components/visitor/VisitorQRCode';
@@ -38,7 +36,7 @@ const CATEGORIES = [
 
 const emptyForm = {
   visitor_name: '', mobile_number: '', visitor_email: '', company: '', visitor_category: 'guest', purpose: '',
-  expected_arrival: '', expected_departure: '', host_user_id: '', location_name: '', vehicle_number: '',
+  expected_arrival: '', expected_departure: '', location_name: '', vehicle_number: '',
   meeting_location: '', special_instructions: '', visitor_count: 1, companions_text: '',
 };
 
@@ -51,7 +49,6 @@ export default function MyVisitors() {
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(emptyForm);
-  const [hostOpen, setHostOpen] = useState(false);
   const [actioningId, setActioningId] = useState(null);
   const [qrVisitor, setQrVisitor] = useState(null);
   const [passImageUrl, setPassImageUrl] = useState(null);
@@ -75,7 +72,6 @@ export default function MyVisitors() {
       setEmployees(emps);
       setLocations(locs);
       setVisitors(d.success ? d.visitors : []);
-      setForm(f => ({ ...f, host_user_id: f.host_user_id || me.id }));
     } catch (e) {
       console.error('MyVisitors loadData:', e.message);
     }
@@ -86,7 +82,7 @@ export default function MyVisitors() {
   const hostingForMe = useMemo(() => visitors.filter(v => v.host_user_id === user?.id && v.created_by !== user?.id), [visitors, user]);
   const pendingMyApproval = useMemo(() => hostingForMe.filter(v => v.status === 'pending_approval'), [hostingForMe]);
 
-  const resetForm = () => setForm({ ...emptyForm, host_user_id: user?.id || '' });
+  const resetForm = () => setForm(emptyForm);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -99,7 +95,7 @@ export default function MyVisitors() {
       const res = await base44.functions.invoke('createVisitorInvite', { ...form, companion_names: String(form.companions_text || '').split('\n').map(x => x.trim()).filter(Boolean) });
       const d = res.data || res;
       if (!d.success) { toast.error(d.error || 'Failed to create invite'); return; }
-      toast.success(d.visitor.status === 'approved' ? 'Visitor invited — QR pass ready' : 'Invite sent — awaiting host approval');
+      toast.success('Visitor invited — QR pass ready');
       setShowForm(false);
       resetForm();
       loadData();
@@ -283,30 +279,9 @@ export default function MyVisitors() {
                     <Input type="datetime-local" value={form.expected_departure} onChange={e => setForm({ ...form, expected_departure: e.target.value })} />
                   </div>
                   <div>
-                    <Label>Employee / Host *</Label>
-                    <Popover open={hostOpen} onOpenChange={setHostOpen}>
-                      <PopoverTrigger asChild>
-                        <Button type="button" variant="outline" role="combobox" className="w-full justify-between font-normal">
-                          {form.host_user_id === user?.id ? `${user?.full_name} (You)` : (empName(form.host_user_id) || 'Select host...')}
-                          <ChevronsUpDown className="w-4 h-4 opacity-50" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-[300px] p-0">
-                        <Command>
-                          <CommandInput placeholder="Search employee..." />
-                          <CommandList>
-                            <CommandEmpty>No employee found</CommandEmpty>
-                            <CommandGroup>
-                              {employees.map(emp => (
-                                <CommandItem key={emp.user_id} value={emp.display_name} onSelect={() => { setForm({ ...form, host_user_id: emp.user_id }); setHostOpen(false); }}>
-                                  {emp.display_name}{emp.user_id === user?.id ? ' (You)' : ''}
-                                </CommandItem>
-                              ))}
-                            </CommandGroup>
-                          </CommandList>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
+                    <Label>Host</Label>
+                    <Input readOnly className="bg-gray-100" value={`${employees.find(e => e.user_id === user?.id)?.display_name || user?.full_name || ''} (You)`} />
+                    <p className="text-xs text-gray-500 mt-0.5">The person who invites is the host.</p>
                   </div>
                   <div>
                     <Label>Number of visitors (this entry)</Label>
@@ -380,7 +355,7 @@ export default function MyVisitors() {
                           <p className="text-xs text-green-600 mt-0.5">Checked in at {safeTime(v.check_in_time)}</p>
                         )}
                         {v.status === 'checked_out' && (
-                          <p className="text-xs text-gray-500 mt-0.5">{safeTime(v.check_in_time)} → {safeTime(v.check_out_time)}</p>
+                          <p className="text-xs text-gray-500 mt-0.5">{safeTime(v.check_in_time)} → {v.auto_checked_out ? 'exit not recorded' : safeTime(v.check_out_time)}</p>
                         )}
                         {v.status === 'rejected' && v.rejection_reason && (
                           <p className="text-xs text-red-600 mt-0.5">Reason: {v.rejection_reason}</p>
