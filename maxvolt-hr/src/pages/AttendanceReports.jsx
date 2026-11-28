@@ -12,7 +12,7 @@ import {
 } from 'recharts';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
-import { rosterFor, afterExit } from '@/lib/leavers';
+import { rosterFor, afterExit, joinedFrom } from '@/lib/leavers';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6'];
 
@@ -58,7 +58,7 @@ export default function AttendanceReports() {
     // active employees, plus anyone whose last working day falls in or after this month
     const dojFilteredEmps = rosterFor(emps, startStr, new Set(filtered.map(r => r.user_id))).filter(e => {
       if (!e.date_of_joining) return true;
-      const [dojY, dojM] = e.date_of_joining.split('-').map(Number);
+      const [dojY, dojM] = (joinedFrom(e) || e.date_of_joining).split('-').map(Number);
       return year > dojY || (year === dojY && month >= dojM);
     });
 

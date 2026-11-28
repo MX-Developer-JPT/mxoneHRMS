@@ -6,7 +6,7 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
-import { rosterFor, afterExit, isLeaver, lastWorkingDay } from '../utils/leavers.js';
+import { rosterFor, afterExit, isLeaver, lastWorkingDay, joinedFrom } from '../utils/leavers.js';
 import { PROTECTED_FIELDS } from '../utils/confirmationRules.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
 import { resolveSigner, signatoryNode, signatoryHtml, parseSignatoryBlock } from '../utils/signatory.js';
@@ -2746,6 +2746,11 @@ router.post('/:name', async (req, res) => {
   if (name.startsWith('cf_')) {
     const { handleConfirmation } = await import('./confirmation.js');
     return await handleConfirmation(name, p, cu, res);
+  }
+  // Admin tool: transfer attendance from an old employee code to the new one (routes/attendanceTransfer.js) — every xf_* function
+  if (name.startsWith('xf_')) {
+    const { handleAttendanceTransfer } = await import('./attendanceTransfer.js');
+    return await handleAttendanceTransfer(name, p, cu, res);
   }
   if (name.startsWith('ot_')) {
     const { handleOvertime } = await import('./overtime.js');
@@ -7023,7 +7028,7 @@ router.post('/:name', async (req, res) => {
           // as Absent (or anything else) — they simply weren't employed
           // yet. Same treatment as a future day that hasn't happened yet.
           // ...and so is a day after a leaver's last working day.
-          const isPreJoining = (emp.date_of_joining && dateStr < emp.date_of_joining) || afterExit(emp, dateStr);
+          const isPreJoining = (joinedFrom(emp) && dateStr < joinedFrom(emp)) || afterExit(emp, dateStr);
 
           if (!rec || isPreJoining) {
             if (isPreJoining) { cell = ''; }
@@ -7445,7 +7450,7 @@ router.post('/:name', async (req, res) => {
         for (let d=1; d<=daysInMonth; d++) {
           const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
           // blank after a leaver's last working day, like the days before joining
-          const code = afterExit(emp, ds) ? '' : mStatusCode(empRecs[ds], ds, empRecs, workingDays, emp.date_of_joining, isLeaver(emp) ? lastWorkingDay(emp) : '');
+          const code = afterExit(emp, ds) ? '' : mStatusCode(empRecs[ds], ds, empRecs, workingDays, joinedFrom(emp), isLeaver(emp) ? lastWorkingDay(emp) : '');
           codes.push(code);
           const gatePass = mGatePassMap[`${emp.user_id}|${ds}`];
           if (gatePass) gatePassDays.add(d);
@@ -8332,7 +8337,7 @@ router.post('/:name', async (req, res) => {
           const weekday = swWeekdayNames[new Date(swY, swM-1, d).getDay()];
           const inMethod = swCheckInMethod(rec);
           const outMethod = swCheckOutMethod(rec);
-          const status = rec?.status || (rec ? '' : swInferredStatus(ds, workingDays, emp.date_of_joining));
+          const status = rec?.status || (rec ? '' : swInferredStatus(ds, workingDays, joinedFrom(emp)));
           // A half-day LEAVE (leave_id + leave_half_day) is a planned leave,
           // not a worked-hours shortfall — label it distinctly from a plain
           // half_day so it doesn't read as an attendance shortfall here.

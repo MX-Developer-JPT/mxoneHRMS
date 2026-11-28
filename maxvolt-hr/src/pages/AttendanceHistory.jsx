@@ -1,3 +1,4 @@
+import { joinedFrom } from '@/lib/leavers';
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,7 +58,7 @@ export default function AttendanceHistory() {
       setAttendanceData(records);
       setHolidays(holidayRecords);
       setEmp(empRecords?.[0] || null);
-      setDateOfJoining(empRecords?.[0]?.date_of_joining || null);
+      setDateOfJoining(joinedFrom(empRecords?.[0]) || empRecords?.[0]?.date_of_joining || null);
       const sMap = {};
       let sDefault = { days: ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'] };
       shiftRecords.forEach(s => { sMap[s.id] = s; if (s.is_default) sDefault = s; });

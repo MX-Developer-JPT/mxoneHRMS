@@ -1,6 +1,6 @@
 // The one overtime calculation used everywhere (attendance screens, Overtime reports, attendance report, salary sheet).
 // Pure: no database access.
-import { isLeaver, lastWorkingDay, ymd } from './leavers.js';
+import { isLeaver, lastWorkingDay, joinedFrom, ymd } from './leavers.js';
 
 export const DEFAULT_POLICY = {
   eligible_only: true,        // only employees marked "overtime eligible" earn overtime
@@ -81,7 +81,7 @@ export function overtimeForDay({ record, shift, holiday, employee, policy = DEFA
   let ot = 0, check = false;
   if (w.missing) notes.push('Missing punch: only completed in/out pairs are counted');
   if (record.auto_closed) notes.push('Day was closed automatically (no check-out)');
-  const outside = (employee?.date_of_joining && date < ymd(employee.date_of_joining)) || (employee && isLeaver(employee) && lastWorkingDay(employee) && date > lastWorkingDay(employee));
+  const outside = (joinedFrom(employee) && date < joinedFrom(employee)) || (employee && isLeaver(employee) && lastWorkingDay(employee) && date > lastWorkingDay(employee));
   if (['absent', 'leave'].includes(record.status)) {
     if (w.minutes > 0) notes.push(`Marked ${record.status}: not counted`);
   } else if (outside) {

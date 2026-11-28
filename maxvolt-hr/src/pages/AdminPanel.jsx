@@ -20,6 +20,7 @@ import AdoptionDashboardTab from '@/components/admin/AdoptionDashboardTab';
 import NotificationHealthTab from '@/components/admin/NotificationHealthTab';
 import ExitClearanceConfigTab from '@/components/admin/ExitClearanceConfigTab';
 import ProbationConfirmationTab from '@/components/admin/ProbationConfirmationTab';
+import AttendanceTransferTab from '@/components/admin/AttendanceTransferTab';
 import CompOffAdminTab from '@/components/admin/CompOffAdminTab';
 import KioskManagementTab from '@/components/admin/KioskManagementTab';
 import HrEmailTab from '@/components/admin/HrEmailTab';
@@ -2833,6 +2834,7 @@ export default function AdminPanel() {
     { id: 'kiosks',     label: 'Kiosk Management',   icon: Fingerprint },
     { id: 'att_import', label: 'Attendance Import',  icon: Download },
     { id: 'att_manual', label: 'Manual Attendance',  icon: CalendarClock },
+    { id: 'att_transfer', label: 'Attendance Transfer', icon: RotateCcw },
     { id: 'stats',      label: 'Statistics',         icon: BarChart3 },
     { id: 'notify',     label: 'Send Notification',  icon: Bell },
     { id: 'notif_health', label: 'Notification Health & MIS Mail', icon: Mail },
@@ -2885,6 +2887,7 @@ export default function AdminPanel() {
       {tab === 'kiosks'     && <KioskManagementTab />}
       {tab === 'att_import' && <AttendanceImportTab />}
       {tab === 'att_manual' && <ManualAttendanceTab />}
+      {tab === 'att_transfer' && <AttendanceTransferTab />}
       {tab === 'notify'     && <NotifyTab />}
       {tab === 'notif_health' && <NotificationHealthTab />}
       {tab === 'walkthrough' && <WalkthroughTab />}

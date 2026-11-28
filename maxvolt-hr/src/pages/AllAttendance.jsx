@@ -20,7 +20,7 @@ import BiometricSyncStatus from '@/components/attendance/BiometricSyncStatus';
 import { PlacesMap } from '@/components/maps/GeoMaps';
 import { fenceOf, signedDistanceM } from '@/lib/geofenceShape';
 import { resolveHierarchy } from '@/lib/hierarchy';
-import { rosterFor } from '@/lib/leavers';
+import { rosterFor, joinedFrom } from '@/lib/leavers';
 
 const STATUS_COLORS = {
   present: 'bg-green-100 text-green-800 border-green-200',
@@ -221,7 +221,7 @@ export default function AllAttendance() {
       const selDate = date;
       emps = emps.filter(e => {
         if (!e.date_of_joining) return true; // no DOJ stored → always show
-        return toDateStr(e.date_of_joining) <= selDate;
+        return toDateStr(joinedFrom(e) || e.date_of_joining) <= selDate;
       });
 
       setEmployees(emps);
