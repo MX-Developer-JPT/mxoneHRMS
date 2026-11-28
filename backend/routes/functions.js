@@ -9,7 +9,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { rosterFor, afterExit, isLeaver, lastWorkingDay, joinedFrom } from '../utils/leavers.js';
 import { PROTECTED_FIELDS } from '../utils/confirmationRules.js';
 import { isRuledOd } from '../utils/odRules.js';
-import { scaleContent, renderOnOnePage } from '../utils/pdfFit.js';
+import { scaleContent, renderOnOnePage, fitScale } from '../utils/pdfFit.js';
 import { snapshotBefore } from '../utils/regularisationRestore.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
 import { resolveSigner, signatoryNode, signatoryHtml, parseSignatoryBlock } from '../utils/signatory.js';
@@ -801,32 +801,89 @@ function buildOfferPdfParams(cand, p) {
 // page 2 layout exactly.
 async function buildOfferLetterPdf(offer) {
   const signer = resolveSigner(await listSignatories(), { ...offer.signatory, role: 'Manager - HR' });
+  const logoDataUrl = getLogoDataUrl();
+  const stampDataUrl = getStampDataUrl();
+  const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
+  const {
+    name, position, department, workLocation, jDateStr, docDateStr, todayStr, validTillStr,
+    annualCTC, sal, reportingTo, employeeCode,
+  } = offer;
+  const L = (n) => Number(n || 0).toLocaleString('en-IN');
+  const GRAY = '#d9d9d9', BLUE = '#1d4ed8';
+  // Tight vertical padding — page 2 has ~16 table rows plus the header
+  // block, and needs to fit on one page like the reference does; the
+  // original [4,3,4,3] cell margin pushed it onto a 4th page, splitting
+  // the outer bordered box across a page break.
+  const cell   = (text, opts = {}) => ({ text: String(text ?? ''), fontSize: 9.5, lineHeight: 1.15, margin: [4, 1.5, 4, 1.5], ...opts });
+  const hCell  = (text) => cell(text, { bold: true, fillColor: GRAY, alignment: 'right' });
+  const hLCell = (text) => cell(text, { bold: true, fillColor: GRAY });
+  const dRow   = (label, annual, monthly) => [cell(label), cell(L(annual), { alignment: 'right' }), cell(L(monthly), { alignment: 'right' })];
+  const sRow   = (label) => [{ text: label, bold: true, decoration: 'underline', colSpan: 3, fontSize: 9.5, lineHeight: 1.15, margin: [4, 3, 4, 1.5] }, {}, {}];
+  const tRow   = (label, annual, monthly, color) => [
+    cell(label, { bold: true, fillColor: GRAY, ...(color ? { color } : {}) }),
+    cell(L(annual),  { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
+    cell(L(monthly), { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
+  ];
+  const salRows = (list) => list.map(([label, annual, monthly]) => dRow(label, annual, monthly));
+  // fonts, spacing and rows shrink together when there are many components
+  const rowPadding = (scale) => ({ paddingTop: () => (scale === 1 ? 2 : 0.5), paddingBottom: () => (scale === 1 ? 2 : 0.5) });
+  const salaryPage = (scale) => scaleContent([
+          {
+            table: {
+              widths: ['*'],
+              body: [[{
+                margin: [0, 0, 0, 0],
+                stack: [
+                  { text: 'M/S MAXVOLT ENERGY INDUSTRIES LIMITED', bold: true, alignment: 'center', fontSize: 11 },
+                  { text: 'E- 82, Bulandshahr Road Industrial Area', alignment: 'center', fontSize: 9 },
+                  { text: 'Ghaziabad, UP - 201009', alignment: 'center', fontSize: 9, margin: [0, 0, 0, 6] },
+                  {
+                    table: {
+                      widths: ['32%', '68%'],
+                      body: [
+                        [cell('Employee Name', { bold: true }), cell(name, { bold: true, alignment: 'right' })],
+                        [cell('Designation', { bold: true }), cell(position, { alignment: 'right' })],
+                        [cell('Department', { bold: true }), cell(department, { alignment: 'right' })],
+                        [cell('Date of Joining', { bold: true }), cell(jDateStr, { alignment: 'right' })],
+                      ],
+                    },
+                    layout: { hLineWidth: () => 0, vLineWidth: () => 0, ...rowPadding(scale) }, margin: [0, 0, 0, 4],
+                  },
+                  { text: 'Break-up of various components of Salary', fontSize: 10.5, italics: true, decoration: 'underline', alignment: 'center', margin: [0, 2, 0, 6] },
+                  {
+                    table: {
+                      headerRows: 1,
+                      widths: ['*', 90, 90],
+                      body: [
+                        [hLCell('Salary Head'), hCell('Annually'), hCell('Monthly')],
+                        sRow('Earnings'),
+                        ...salRows(sal.rows.earnings),
+                        tRow('Total Gross Salary (A)', sal.gross_annual, sal.gross_monthly),
+                        sRow('Deduction'),
+                        ...salRows(sal.rows.deductions),
+                        tRow('Total Deduction (B)', sal.deduction_annual, sal.deduction_monthly),
+                        tRow('Total Net Salary (A-B)', sal.net_annual, sal.net_monthly),
+                        sRow('Contribution'),
+                        ...salRows(sal.rows.contributions),
+                        tRow('Total Contribution (C)', sal.contribution_annual, sal.contribution_monthly),
+                        tRow('Annually CTC (A+C)', annualCTC, Math.round(annualCTC / 12), BLUE),
+                      ],
+                    },
+                    layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc', ...rowPadding(scale) },
+                  },
+                ],
+                border: [true, true, true, true],
+              }]],
+            },
+            layout: { hLineWidth: () => 1, vLineWidth: () => 1, hLineColor: () => '#1a1a1a', vLineColor: () => '#1a1a1a' },
+            margin: [0, 0, 0, 10],
+          },
+          { text: '(Confidential)', fontSize: 10.5, bold: true, alignment: 'center' },
+  ].map((node) => ({ ...node, lineHeight: 1.15 })), scale);
+  const salaryScale = await fitScale(salaryPage, (content) => renderPdf({ pageSize: 'A4', pageMargins: [50, LETTERHEAD_MARGINS.top, 50, LETTERHEAD_MARGINS.bottom], defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.4 }, content }));   // the letter's own default style
+
   return new Promise((resolve, reject) => {
     try {
-      const logoDataUrl = getLogoDataUrl();
-      const stampDataUrl = getStampDataUrl();
-      const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
-      const {
-        name, position, department, workLocation, jDateStr, docDateStr, todayStr, validTillStr,
-        annualCTC, sal, reportingTo, employeeCode,
-      } = offer;
-      const L = (n) => Number(n || 0).toLocaleString('en-IN');
-      const GRAY = '#d9d9d9', BLUE = '#1d4ed8';
-      // Tight vertical padding — page 2 has ~16 table rows plus the header
-      // block, and needs to fit on one page like the reference does; the
-      // original [4,3,4,3] cell margin pushed it onto a 4th page, splitting
-      // the outer bordered box across a page break.
-      const cell   = (text, opts = {}) => ({ text: String(text ?? ''), fontSize: 9.5, margin: [4, 1.5, 4, 1.5], ...opts });
-      const hCell  = (text) => cell(text, { bold: true, fillColor: GRAY, alignment: 'right' });
-      const hLCell = (text) => cell(text, { bold: true, fillColor: GRAY });
-      const dRow   = (label, annual, monthly) => [cell(label), cell(L(annual), { alignment: 'right' }), cell(L(monthly), { alignment: 'right' })];
-      const sRow   = (label) => [{ text: label, bold: true, decoration: 'underline', colSpan: 3, fontSize: 9.5, margin: [4, 3, 4, 1.5] }, {}, {}];
-      const tRow   = (label, annual, monthly, color) => [
-        cell(label, { bold: true, fillColor: GRAY, ...(color ? { color } : {}) }),
-        cell(L(annual),  { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
-        cell(L(monthly), { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
-      ];
-      const salRows = (list) => list.map(([label, annual, monthly]) => dRow(label, annual, monthly));
       const term = (k, v) => [cell(k, { bold: true }), cell(v)];
       const terms = [
         term('Designation', position), term('Department', department), term('Employment type', offer.employmentType),
@@ -912,59 +969,9 @@ async function buildOfferLetterPdf(offer) {
             ],
           },
 
-          // ── PAGE 2 — salary break-up ──
-          { text: '', pageBreak: 'before' },
-          {
-            table: {
-              widths: ['*'],
-              body: [[{
-                margin: [0, 0, 0, 0],
-                stack: [
-                  { text: 'M/S MAXVOLT ENERGY INDUSTRIES LIMITED', bold: true, alignment: 'center', fontSize: 11 },
-                  { text: 'E- 82, Bulandshahr Road Industrial Area', alignment: 'center', fontSize: 9 },
-                  { text: 'Ghaziabad, UP - 201009', alignment: 'center', fontSize: 9, margin: [0, 0, 0, 6] },
-                  {
-                    table: {
-                      widths: ['32%', '68%'],
-                      body: [
-                        [cell('Employee Name', { bold: true }), cell(name, { bold: true, alignment: 'right' })],
-                        [cell('Designation', { bold: true }), cell(position, { alignment: 'right' })],
-                        [cell('Department', { bold: true }), cell(department, { alignment: 'right' })],
-                        [cell('Date of Joining', { bold: true }), cell(jDateStr, { alignment: 'right' })],
-                      ],
-                    },
-                    layout: 'noBorders', margin: [0, 0, 0, 4],
-                  },
-                  { text: 'Break-up of various components of Salary', italics: true, decoration: 'underline', alignment: 'center', margin: [0, 2, 0, 6] },
-                  {
-                    table: {
-                      headerRows: 1,
-                      widths: ['*', 90, 90],
-                      body: [
-                        [hLCell('Salary Head'), hCell('Annually'), hCell('Monthly')],
-                        sRow('Earnings'),
-                        ...salRows(sal.rows.earnings),
-                        tRow('Total Gross Salary (A)', sal.gross_annual, sal.gross_monthly),
-                        sRow('Deduction'),
-                        ...salRows(sal.rows.deductions),
-                        tRow('Total Deduction (B)', sal.deduction_annual, sal.deduction_monthly),
-                        tRow('Total Net Salary (A-B)', sal.net_annual, sal.net_monthly),
-                        sRow('Contribution'),
-                        ...salRows(sal.rows.contributions),
-                        tRow('Total Contribution (C)', sal.contribution_annual, sal.contribution_monthly),
-                        tRow('Annually CTC (A+C)', annualCTC, Math.round(annualCTC / 12), BLUE),
-                      ],
-                    },
-                    layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc' },
-                  },
-                ],
-                border: [true, true, true, true],
-              }]],
-            },
-            layout: { hLineWidth: () => 1, vLineWidth: () => 1, hLineColor: () => '#1a1a1a', vLineColor: () => '#1a1a1a' },
-            margin: [0, 0, 0, 10],
-          },
-          { text: '(Confidential)', bold: true, alignment: 'center' },
+          // ── LAST PAGE — salary break-up, always on one page ──
+          // the break sits on the first block itself: an empty line before it would take height the fitting did not measure
+          ...salaryPage(salaryScale).map((node, i) => (i ? node : { ...node, pageBreak: 'before' })),
         ],
       };
 

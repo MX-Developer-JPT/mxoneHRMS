@@ -22,7 +22,13 @@ export function scaleContent(node, s) {
   return node;
 }
 
-export const FIT_SCALES = [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55];
+export const FIT_SCALES = [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45];
+
+/** The largest scale at which `build(scale)` renders on one page; the smallest scale is the last resort. */
+export async function fitScale(build, render) {
+  for (const s of FIT_SCALES) if (pageCount(await render(build(s))) <= 1) return s;
+  return FIT_SCALES[FIT_SCALES.length - 1];
+}
 
 /** Renders `build(scale)` at the largest scale that gives one page; the smallest scale is the last resort. */
 export async function renderOnOnePage(build, render) {
