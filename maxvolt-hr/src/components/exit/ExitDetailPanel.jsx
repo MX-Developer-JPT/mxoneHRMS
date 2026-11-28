@@ -23,7 +23,7 @@ import {
   RotateCcw, ChevronRight, BookOpen, ShieldCheck, Activity, Info, Loader2,
   Send, Edit3, Building2, Paperclip, Lock
 } from 'lucide-react';
-import { openLetterheadPrintWindow } from '@/utils/letterhead';
+import { openLetterheadPrintWindow, fitOnOnePage } from '@/utils/letterhead';
 import { isDirectReport } from '@/lib/hierarchy';
 
 /* ── helpers ─────────────────────────────────────── */
@@ -298,7 +298,7 @@ export default function ExitDetailPanel({ exitRecord: initialRecord, currentUser
         resignation_date: exit.resignation_date,
       });
       if (res.data?.html) {
-        openLetterheadPrintWindow(`${docType} – ${exit.user?.full_name}`, res.data.html, '', false);
+        openLetterheadPrintWindow(`${docType} – ${exit.user?.full_name}`, docType === 'relieving_letter' ? fitOnOnePage(res.data.html) : res.data.html, '', false);
       } else toast.error(res.data?.error || 'Generation failed');
     } catch (e) { toast.error(e.message); }
     setGenerating('');

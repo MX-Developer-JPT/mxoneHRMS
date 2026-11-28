@@ -9,6 +9,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { rosterFor, afterExit, isLeaver, lastWorkingDay, joinedFrom } from '../utils/leavers.js';
 import { PROTECTED_FIELDS } from '../utils/confirmationRules.js';
 import { isRuledOd } from '../utils/odRules.js';
+import { scaleContent, renderOnOnePage } from '../utils/pdfFit.js';
 import { snapshotBefore } from '../utils/regularisationRestore.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
 import { resolveSigner, signatoryNode, signatoryHtml, parseSignatoryBlock } from '../utils/signatory.js';
@@ -498,15 +499,18 @@ async function buildLetterPdf(label, ref, htmlContent, extraImages = {}) {
   const logoDataUrl = getLogoDataUrl();
   const stampDataUrl = getStampDataUrl();
   const signers = await listSignatories();
-  const content = htmlLetterToPdfContent(htmlContent, signers);
-  // A letter written without its own signatory block (AI drafts, certificates, older saved letters) gets the standard one,
-  // so every letter shows the stamp with the signatory's name and designation.
-  if (!/class=["']mx-(signatory|seal)["']/i.test(htmlContent)) {
-    content.push(signatoryNode(resolveSigner(signers), { stamp: stampDataUrl || '', company: !/For\s+Max\s?volt/i.test(htmlContent) }));
-  }
+  const buildContent = () => {
+    const content = htmlLetterToPdfContent(htmlContent, signers);
+    // A letter written without its own signatory block (AI drafts, certificates, older saved letters) gets the standard one,
+    // so every letter shows the stamp with the signatory's name and designation.
+    if (!/class=["']mx-(signatory|seal)["']/i.test(htmlContent)) {
+      content.push(signatoryNode(resolveSigner(signers), { stamp: stampDataUrl || '', company: !/For\s+Max\s?volt/i.test(htmlContent) }));
+    }
+    return content;
+  };
   const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
 
-  const docDef = {
+  const docDef = (scale) => ({
     pageSize: 'A4',
     pageMargins: [50, LETTERHEAD_MARGINS.top, 50, LETTERHEAD_MARGINS.bottom],
     header: headerFn,
@@ -517,11 +521,13 @@ async function buildLetterPdf(label, ref, htmlContent, extraImages = {}) {
       ...(stampDataUrl ? { stamp: stampDataUrl } : {}),
       ...extraImages,
     },
-    content,
-    defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.6 },
-  };
+    content: scaleContent(buildContent(), scale),
+    defaultStyle: { font: 'Roboto', fontSize: Math.round(10.5 * scale * 100) / 100, lineHeight: scale < 1 ? 1.35 : 1.6 },
+  });
 
-  return renderPdf(docDef);
+  // a relieving letter is one page: text, spacing and stamp shrink together until it fits
+  if (/relieving/i.test(label)) return renderOnOnePage(docDef, renderPdf);
+  return renderPdf(docDef(1));
 }
 
 /* ── PDF generation helper (salary structure) ──────────────

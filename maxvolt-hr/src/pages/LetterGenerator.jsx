@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
-import { openLetterheadPrintWindow } from '../utils/letterhead';
+import { openLetterheadPrintWindow, fitOnOnePage } from '../utils/letterhead';
 import MobileSelect from '@/components/MobileSelect';
 import { safeDate } from '@/lib/dateUtils';
 import { Link } from 'react-router-dom';
@@ -394,7 +394,8 @@ export default function LetterGenerator() {
     const html = isHtml ? letter : `<div style="font-size:11px;line-height:1.8;color:#1a1a1a;white-space:pre-wrap;">${
       letter.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br/>')
     }</div>`;
-    openLetterheadPrintWindow(`${meta?.label || 'Letter'} - ${selectedEmp?.display_name || ''}`, html, '', false);
+    // the relieving letter always prints on a single page
+    openLetterheadPrintWindow(`${meta?.label || 'Letter'} - ${selectedEmp?.display_name || ''}`, letterType === 'relieving' ? fitOnOnePage(html) : html, '', false);
   };
 
   const copyLetter = () => { navigator.clipboard.writeText(letter); toast.success('Letter copied'); };

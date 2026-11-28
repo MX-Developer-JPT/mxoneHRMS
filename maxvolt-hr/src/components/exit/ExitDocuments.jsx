@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { FileText, Printer, Loader2, Lock } from 'lucide-react';
 import { toast } from 'sonner';
-import { openLetterheadPrintWindow } from '@/utils/letterhead';
+import { openLetterheadPrintWindow, fitOnOnePage } from '@/utils/letterhead';
 
 // Exit letters from the configured templates. Each one shows why it cannot be issued yet; the relieving and experience letters wait
 // for the mandatory exit conditions (clearances, settlement, last working day, access revocation).
@@ -19,7 +19,7 @@ export default function ExitDocuments({ exit, name }) {
     setBusy(type);
     try {
       const r = await base44.functions.invoke('ex_generate_document', { exit_id: exit.id, doc_type: type });
-      if (r?.data?.success) { openLetterheadPrintWindow(`${title} – ${name || ''}`, r.data.html, '', false); load(); }
+      if (r?.data?.success) { openLetterheadPrintWindow(`${title} – ${name || ''}`, type === 'relieving_letter' ? fitOnOnePage(r.data.html) : r.data.html, '', false); load(); }
       else toast.error(r?.data?.error || 'Could not generate');
     } catch (e) { toast.error(e.message); }
     setBusy('');
