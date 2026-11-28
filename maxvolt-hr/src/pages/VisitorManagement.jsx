@@ -540,7 +540,7 @@ export default function VisitorManagement() {
                       <CommandEmpty>No employee found</CommandEmpty>
                       <CommandGroup>
                         {employees.map(emp => (
-                          <CommandItem key={emp.user_id} value={emp.display_name} onSelect={() => { setWalkInForm({ ...walkInForm, host_user_id: emp.user_id }); setHostOpen(false); }}>
+                          <CommandItem key={emp.user_id} value={`${emp.display_name} ${emp.employee_code || ''}`} onSelect={() => { setWalkInForm({ ...walkInForm, host_user_id: emp.user_id }); setHostOpen(false); }}>
                             {emp.display_name}
                           </CommandItem>
                         ))}

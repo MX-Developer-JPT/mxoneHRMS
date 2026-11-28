@@ -3,6 +3,7 @@
 //
 // Sections: attendance summary, new joinings, visitors (walk-in + invited), gate passes,
 // recruitment, reimbursements, leave. Everything is read straight from the live data.
+import { withVisitorNames } from './visitorNames.js';
 import { all } from '../db.js';
 import { sheetWithTitle, table, section } from './xlsxSheet.js';
 export { sheetWithTitle, table, section };
@@ -117,7 +118,7 @@ export async function collectMis({ period, date, department }) {
     .sort((a, b) => String(a.date_of_joining).localeCompare(String(b.date_of_joining)));
 
   // ── Visitors (walk-in + invited) ──
-  const visitors = pj(await all("SELECT data, created_at FROM entities WHERE type='Visitor'"))
+  const visitors = (await withVisitorNames(pj(await all("SELECT data, created_at FROM entities WHERE type='Visitor'"))))
     .filter(v => { const d = String(v.expected_arrival || v.check_in_time || v._created || '').slice(0, 10); return d >= from && d <= to; })
     .map(v => {
       const hostDept = (v.host_user_id && empByUser[v.host_user_id]?.department)

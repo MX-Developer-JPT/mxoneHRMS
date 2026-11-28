@@ -22,6 +22,7 @@ import {
   durationToDeparture, groupFields, makeLimiter, generatePassword, summariseByLocation, MESSAGES,
 } from '../utils/kiosk.js';
 import { withEvent } from '../utils/visitorRecord.js';
+import { withVisitorNames } from '../utils/visitorNames.js';
 
 // A different secret from user tokens: verifying a user token here, or a kiosk token in auth.js, always fails.
 const KIOSK_SECRET = createHash('sha256').update('maxvolt-kiosk:' + JWT_SECRET).digest('hex');
@@ -201,7 +202,7 @@ kioskRouter.post('/lookup', async (req, res) => {
       return res.json({ success: false, code: verdict.code, error: verdict.message });
     }
     await writeLog(kiosk, 'invite_lookup', { visitor_id: found.v.id, result: 'valid', detail: intent, ip });
-    return res.json({ success: true, visitor: publicVisit(found.v), ticket: signTicket(kiosk, found.v.id, intent, TICKET_MINUTES), intent });
+    return res.json({ success: true, visitor: publicVisit((await withVisitorNames([found.v]))[0]), ticket: signTicket(kiosk, found.v.id, intent, TICKET_MINUTES), intent });
   } catch (e) { console.error('[kiosk/lookup]', e.message); return res.status(500).json({ error: 'Something went wrong' }); }
 });
 

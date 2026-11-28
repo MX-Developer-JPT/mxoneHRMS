@@ -12,6 +12,7 @@ import { isRuledOd } from '../utils/odRules.js';
 import { scaleContent, renderOnOnePage, fitScale } from '../utils/pdfFit.js';
 import { snapshotBefore } from '../utils/regularisationRestore.js';
 import { withName } from '../utils/actorName.js';
+import { withVisitorNames } from '../utils/visitorNames.js';
 import { withEvent, visitTimeline, exitTime, istText, EVENT_LABELS } from '../utils/visitorRecord.js';
 import { flagLeftWithoutGatePass, leftWithoutGatePass, buildLeftWorkbook } from '../utils/leftWithoutGatePass.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
@@ -21191,7 +21192,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       if (!(await canOperateAtLocation(cu, rwvLocation))) return res.status(403).json({ error: `You are not assigned to ${rwvLocation}` });
       if (await isRestrictedMobile(mobile_number)) return res.json({ success: false, error: 'This visitor is restricted — contact HR/admin to proceed', code: 'RESTRICTED' });
 
-      if (!(await one('SELECT id FROM users WHERE id=$1', [rwvHostId]))) return res.json({ success: false, error: 'Selected host not found' });
+      if (!(await one("SELECT u.id FROM users u JOIN entities e ON e.type='Employee' AND e.user_id=u.id WHERE u.id=$1 AND COALESCE(e.data::jsonb->>'status', e.status)='active'", [rwvHostId]))) return res.json({ success: false, error: 'Select the employee the visitor has come to meet (an active employee)' });
       const rwvHostName = await visitorActorName(rwvHostId);
       const rwvActor = await visitorActorName(cu.id);
       const rwvNow = new Date().toISOString();
@@ -21295,7 +21296,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         const seen = withEvent(v, 'pass_scanned', { by: cu.id, by_name: await visitorActorName(cu.id), via: 'gate', note: status });
         await moveVisit(vqrRow.id, v.status, seen);
       }
-      return res.json({ success: true, status, message, visitor: v });
+      return res.json({ success: true, status, message, visitor: (await withVisitorNames([v]))[0] });
     }
 
     case 'visitorCheckIn': {
@@ -21362,7 +21363,8 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
       const evRows = await all("SELECT data, created_at FROM entities WHERE type='Visitor' ORDER BY created_at DESC");
       const q = String(evSearch || '').trim().toLowerCase();
       const visitDate = (v) => String(v.expected_arrival || v.check_in_time || '').slice(0, 10);
-      const evList = evRows.map(r => ({ created_at: `${String(r.created_at).replace(' ', 'T').slice(0, 23)}Z`, ...JSON.parse(r.data) })).filter(v => {
+      const evNamed = await withVisitorNames(evRows.map(r => ({ created_at: `${String(r.created_at).replace(' ', 'T').slice(0, 23)}Z`, ...JSON.parse(r.data) })));
+      const evList = evNamed.filter(v => {
         const d = visitDate(v);
         if (evFrom && d < evFrom) return false;
         if (evTo && d > evTo) return false;
@@ -21467,7 +21469,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
     case 'getMyVisitors': {
       if (!cu) return res.status(401).json({ error: 'Unauthorized' });
       const rows = await all("SELECT data, created_at FROM entities WHERE type='Visitor' AND (data::jsonb->>'created_by'=$1 OR data::jsonb->>'host_user_id'=$1) ORDER BY created_at DESC LIMIT 500", [cu.id]);
-      return res.json({ success: true, visitors: rows.map(r => ({ created_at: `${String(r.created_at).replace(' ', 'T').slice(0, 23)}Z`, ...JSON.parse(r.data) })) });
+      return res.json({ success: true, visitors: await withVisitorNames(rows.map(r => ({ created_at: `${String(r.created_at).replace(' ', 'T').slice(0, 23)}Z`, ...JSON.parse(r.data) }))) });
     }
 
     // Gate Admin / HR / admin / management read — the ONLY way (besides the
@@ -21483,7 +21485,7 @@ Rank critical issues first, then warnings, then positives/info. Max 6 insights.`
         const assigned = await getGateAdminAssignedLocations(cu.id);
         if (assigned !== null) visitors = visitors.filter(v => assigned.includes(v.location_name));
       }
-      return res.json({ success: true, visitors });
+      return res.json({ success: true, visitors: await withVisitorNames(visitors) });
     }
 
     /* ── Gate Admin location assignment (functional requirement §3) — a
