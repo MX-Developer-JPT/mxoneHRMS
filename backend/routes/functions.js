@@ -757,9 +757,12 @@ function buildOfferPdfParams(cand, p) {
   const workLocation = location || 'Ghaziabad, Uttar Pradesh';
   const ctc = Number(annual_ctc || cand.expected_ctc || 0);
   const jDate = joining_date || '';
-  const validTill = new Date(Date.now() + (Number(offer_valid_days) || 7) * 24 * 60 * 60 * 1000);
+  // validity runs from the offer issue date, to the end of that day in India
+  const issued = /^\d{4}-\d{2}-\d{2}$/.test(String(p.issue_date || '')) ? new Date(`${p.issue_date}T23:59:00+05:30`) : new Date();
+  const validTill = new Date(issued.getTime() + (Number(offer_valid_days) || 7) * 24 * 60 * 60 * 1000);
   const fmtDate = (d) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
   const jDateStr = jDate ? fmtDate(jDate) : 'As mutually agreed';
+  const lineList = (v, n) => String(v || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, n);
   const sal = computeOfferSalary(ctc, Number(medical_contribution) || 0, salary_overrides);
   const clip = (v, n = 300) => String(v || '').trim().slice(0, n);
   return {
@@ -772,7 +775,9 @@ function buildOfferPdfParams(cand, p) {
     notes: clip(p.notes, 1000), offerRef: clip(p.offer_ref, 60),
     signatory: { id: p.signatory_id, name: p.signatory_name, designation: p.signatory_designation },
     jDateStr, docDateStr: jDateStr,
-    todayStr: fmtDate(new Date()), validTillStr: fmtDate(validTill),
+    todayStr: fmtDate(issued), validTillStr: fmtDate(validTill),
+    address: clip(p.current_address, 400), workingSchedule: clip(p.working_schedule, 200), variablePay: clip(p.variable_pay, 600),
+    specialClauses: lineList(p.special_clauses, 20),
     annualCTC: ctc, sal,
     reportingTo: reporting_to || '', employeeCode: cand.employee_code || '',
     _jDate: jDate, _validTill: validTill, _probation: probation_months,
@@ -820,8 +825,10 @@ async function buildOfferLetterPdf(offer) {
         term('Designation', position), term('Department', department), term('Employment type', offer.employmentType),
         term('Work location', workLocation), term('Reporting manager', reportingTo || 'As assigned'), term('Date of joining', jDateStr),
         term('Probation period', offer.probationMonths ? `${offer.probationMonths} month(s)` : 'Not applicable'),
-        term('Notice period', `${offer.noticeDays} days`), term('Annual CTC', `INR ${L(annualCTC)}`),
-        term('Monthly gross salary', `INR ${L(sal.gross_monthly)}`),
+        term('Notice period', `${offer.noticeDays} days`),
+        ...(offer.workingSchedule ? [term('Working days / schedule', offer.workingSchedule)] : []),
+        term('Annual CTC', `INR ${L(annualCTC)}`), term('Monthly gross salary', `INR ${L(sal.gross_monthly)}`),
+        ...(offer.variablePay ? [term('Variable pay / incentives', offer.variablePay)] : []),
         ...(offer.phone || offer.email ? [term('Your contact', [offer.phone, offer.email].filter(Boolean).join('  |  '))] : []),
       ];
 
@@ -849,6 +856,7 @@ async function buildOfferLetterPdf(offer) {
           // ── PAGE 1 — letter body ──
           { text: 'OFFER LETTER', bold: true, fontSize: 14, decoration: 'underline', alignment: 'center', margin: [0, 0, 0, 16] },
           { columns: [{ text: todayStr }, { text: offer.offerRef ? `Ref: ${offer.offerRef}` : '', alignment: 'right' }], margin: [0, 0, 0, 14] },
+          ...(offer.address ? [{ text: `${name}\n${offer.address}`, fontSize: 9.5, margin: [0, 0, 0, 10] }] : []),
           { text: [{ text: 'Dear ' }, { text: name, bold: true }, { text: ',' }], margin: [0, 0, 0, 10] },
           { text: 'Congratulation!!', bold: true, margin: [0, 0, 0, 8] },
           { text: [{ text: 'Subject: ', bold: true }, { text: `Offer to the Post of ` }, { text: position, bold: true }, { text: '.' }], margin: [0, 0, 0, 10] },
@@ -861,9 +869,9 @@ async function buildOfferLetterPdf(offer) {
           { text: 'We trust that your knowledge, skills and experience will be among our most valuable assets. As discussed, and agreed with you, you will be eligible to receive the following beginning on your joining date:', alignment: 'justify', margin: [0, 0, 0, 8] },
           {
             ul: [
-              [{ text: 'Salary: Annual CTC- INR ' }, { text: `${L(annualCTC)}/-`, bold: true }],
-              [{ text: 'Date of Joining: ' }, { text: jDateStr, bold: true }],
-              [{ text: 'Documentation: ' }, { text: docDateStr, bold: true }],
+              { text: [{ text: 'Salary: Annual CTC- INR ' }, { text: `${L(annualCTC)}/-`, bold: true }] },
+              { text: [{ text: 'Date of Joining: ' }, { text: jDateStr, bold: true }] },
+              { text: [{ text: 'Documentation: ' }, { text: docDateStr, bold: true }] },
             ],
             margin: [10, 0, 0, 12],
           },
@@ -871,13 +879,14 @@ async function buildOfferLetterPdf(offer) {
             { text: 'This offer letter is valid until ' }, { text: validTillStr, bold: true },
             { text: '. Please send a signed copy of this letter indicating your acceptance to join and a resignation acceptance letter from your current employer to our HR.' },
           ], alignment: 'justify', margin: [0, 0, 0, 10] },
-          { text: `The joining formalities and induction will be carried out in our ${workLocation} office. Please submit the following documents to HR at the time of your joining:`, alignment: 'justify', margin: [0, 0, 0, 8] },
+          { text: `The joining formalities and induction will be carried out in our ${workLocation}${/office$/i.test(workLocation.trim()) ? '' : ' office'}. Please submit the following documents to HR at the time of your joining:`, alignment: 'justify', margin: [0, 0, 0, 8] },
           { ul: docsList, margin: [10, 0, 0, 12] },
           // page 2: the terms, closing and signatures stay together
           { text: 'Terms of employment', bold: true, margin: [0, 0, 0, 4], pageBreak: 'before' },
           { table: { widths: ['34%', '*'], body: terms }, layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc', paddingTop: () => 0, paddingBottom: () => 0 }, lineHeight: 1.1, margin: [0, 0, 0, 8] },
           ...(offer.benefits.length ? [{ text: 'Benefits', bold: true, margin: [0, 2, 0, 3] }, { ul: offer.benefits, margin: [10, 0, 0, 8] }] : []),
           ...(offer.otherTerms.length ? [{ text: 'Other terms and conditions', bold: true, margin: [0, 2, 0, 3] }, { ul: offer.otherTerms, margin: [10, 0, 0, 8] }] : []),
+          ...(offer.specialClauses.length ? [{ text: 'Special clauses', bold: true, margin: [0, 2, 0, 3] }, { ul: offer.specialClauses, margin: [10, 0, 0, 8] }] : []),
           ...(offer.notes ? [{ text: offer.notes, alignment: 'justify', margin: [0, 0, 0, 10] }] : []),
           { text: 'We look forward to welcome you aboard. Sincerely,', margin: [0, 4, 0, 6] },
           {
@@ -963,7 +972,7 @@ async function buildOfferLetterPdf(offer) {
 }
 
 // One entry in the candidate's offer letter history: what was generated or sent, to whom, with the exact PDF.
-async function recordOfferVersion({ candidate_id, cand, params, input, pdfBuffer, filename, status, error = '', offerRef = '', cu, overrideReason = '' }) {
+async function recordOfferVersion({ candidate_id, cand, params, input, pdfBuffer, filename, status, error = '', offerRef = '', cu, overrideReason = '', recipient = '', source = '' }) {
   try {
     const id = uuidv4(), at = new Date().toISOString();
     let file = { pdf_base64: pdfBuffer.toString('base64') };
@@ -974,7 +983,9 @@ async function recordOfferVersion({ candidate_id, cand, params, input, pdfBuffer
     const version = Number((await one("SELECT COUNT(*) AS n FROM entities WHERE type='OfferLetterDispatch' AND data::jsonb->>'candidate_id'=$1", [candidate_id]))?.n || 0) + 1;
     await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'OfferLetterDispatch',NULL,$2,$3)", [id, status, JSON.stringify({
       id, candidate_id, version, status, error: error || '', offer_ref: offerRef, filename, ...file,
-      recipient_email: status === 'generated' ? '' : cand.email, candidate_name: params.name,
+      recipient_email: status === 'generated' ? '' : recipient || cand.email, candidate_name: params.name, source,
+      requisition_id: cand.requisition_id || cand.job_id || cand.job_requisition_id || '', issue_date: input.issue_date || at.slice(0, 10),
+      attachments: (input.attachments || []).map((a) => a.name),
       designation: params.position, department: params.department, annual_ctc: params.annualCTC, monthly_gross: params.sal.gross_monthly,
       joining_date: params._jDate, terms: { ...input, salary: params.sal }, override_reason: overrideReason,
       by: cu.id, by_name: cu.full_name || cu.email || '', created_at: at,
@@ -2723,8 +2734,13 @@ router.post('/:name', async (req, res) => {
     const { handleLeftEmployees } = await import('./leftEmployees.js');
     return await handleLeftEmployees(name, p, cu, res);
   }
-  // Authorised signatories, the letter send log and offer letter helpers (routes/letters.js)
-  if (name.startsWith('sg_') || name.startsWith('lt_') || name.startsWith('of_')) {
+  // Offer letters: direct and recruitment offers, register, audit and employee linking (routes/offers.js) — every of_* function
+  if (name.startsWith('of_')) {
+    const { handleOffers } = await import('./offers.js');
+    return await handleOffers(name, p, cu, res);
+  }
+  // Authorised signatories and the letter send log (routes/letters.js)
+  if (name.startsWith('sg_') || name.startsWith('lt_')) {
     const { handleLetters } = await import('./letters.js');
     return await handleLetters(name, p, cu, res);
   }
@@ -12794,19 +12810,24 @@ router.post('/:name', async (req, res) => {
     }
 
     case 'previewOfferLetterPdf': {
-      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
       const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
-      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
-      if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
-      const cand = JSON.parse(cRow.data);
+      const Offers = await import('./offers.js');
+      const ready = await Offers.prepareOffer(candidate_id, p, cu);
+      if (ready.error) return res.status(ready.status).json({ success: false, error: ready.error, problems: ready.problems });
+      const { input, actor, source } = ready;
+      const cand = Offers.withDraft(ready.candidate, input);
       try {
-        const params = buildOfferPdfParams(cand, p);
+        const params = buildOfferPdfParams(cand, input);
         if (params.sal.problems.length) return res.json({ success: false, error: params.sal.problems.join(' ') });
         const pdfBuffer = await buildOfferLetterPdf(params);
         const filename = `Offer_Letter_${(cand.full_name || 'Candidate').replace(/\s+/g, '_')}.pdf`;
-        // "Generate" keeps this version in the candidate's offer history; a plain preview does not
-        if (p.record) await recordOfferVersion({ candidate_id, cand, params, input: p, pdfBuffer, filename, status: 'generated', cu });
+        // "Generate" saves the form and keeps this version in the offer history; a plain preview changes nothing
+        if (p.record) {
+          if (cand.status !== 'joined') await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(cand), candidate_id]);
+          await recordOfferVersion({ candidate_id, cand, params, input, pdfBuffer, filename, status: 'generated', cu: { id: actor.id, full_name: actor.name }, source });
+          await Offers.offerAudit(candidate_id, 'generated', actor, { annual_ctc: params.annualCTC });
+        }
         return res.json({ success: true, base64: pdfBuffer.toString('base64'), filename });
       } catch (e) {
         return res.json({ success: false, error: 'Failed to generate preview: ' + e.message });
@@ -12815,19 +12836,17 @@ router.post('/:name', async (req, res) => {
 
     /* ── Send Offer Letter (email to candidate) ─────── */
     case 'sendOfferLetter': {
-      if (!(await hasRole(cu, CANDIDATE_ROLES))) return res.status(403).json({ error: 'HR/Recruiter access required' });
-      const { candidate_id, joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes, medical_contribution = 0, salary_overrides } = p;
+      const { candidate_id } = p;
       if (!candidate_id) return res.json({ success: false, error: 'candidate_id required' });
-
-      const cRow = await one("SELECT data FROM entities WHERE type='Candidate' AND id=$1", [candidate_id]);
-      if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
-      const cand = JSON.parse(cRow.data);
-
-      if (!cand.email) return res.json({ success: false, error: 'Candidate has no email address' });
-
-      if (!validEmail(cand.email)) return res.json({ success: false, error: 'The candidate’s email address is not valid.' });
+      const Offers = await import('./offers.js');
+      const ready = await Offers.prepareOffer(candidate_id, p, cu);
+      if (ready.error) return res.status(ready.status).json({ success: false, error: ready.error, problems: ready.problems });
+      const { input, actor, source } = ready;
+      const cand = Offers.withDraft(ready.candidate, input);
       if (cand.status === 'joined') return res.json({ success: false, error: 'This candidate has already joined.' });
-      if (!joining_date) return res.json({ success: false, error: 'Enter the date of joining.' });
+      const recipient = String(input.recipient_email || cand.email || '').trim();
+      if (!validEmail(recipient)) return res.json({ success: false, error: 'Enter a valid recipient email address.' });
+      const { joining_date, designation, department, location, reporting_to, annual_ctc, probation_months = 6, offer_valid_days = 7, notes, medical_contribution = 0, salary_overrides } = input;
 
       // Hard gate — server-side, not just a disabled button on the frontend — the offer letter must not go out until every
       // mandatory pre-offer document has been HR-verified. HR / admin may send without them only by recording a reason.
@@ -12845,7 +12864,7 @@ router.post('/:name', async (req, res) => {
       const ctc        = Number(annual_ctc || cand.expected_ctc || 0);
       const jDate      = joining_date || '';
       const probation  = probation_months;
-      const validTill  = new Date(Date.now() + (offer_valid_days || 7) * 24 * 60 * 60 * 1000);
+      const validTill  = buildOfferPdfParams(cand, input)._validTill;
 
       // Canonical salary math — same helper previewOfferLetterPdf uses, so
       // the two can never compute different numbers for the same inputs.
@@ -12855,7 +12874,7 @@ router.post('/:name', async (req, res) => {
 
       const offerRef    = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
       const acceptToken = uuidv4();
-      const todayStr    = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+      const todayStr    = buildOfferPdfParams(cand, input).todayStr;
       const jDateStr    = jDate ? new Date(jDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' }) : 'As mutually agreed';
       const validTillStr = validTill.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
       const fmtIN       = n => Number(n || 0).toLocaleString('en-IN');
@@ -12900,21 +12919,21 @@ router.post('/:name', async (req, res) => {
   <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;">
     <p style="margin:0 0 8px;"><strong>Ref:</strong> ${offerRef}</p>
     <p style="margin:0 0 20px;"><strong>Date:</strong> ${todayStr}</p>
-    <p style="margin:0 0 6px;">Dear <strong>${name}</strong>,</p>
+    <p style="margin:0 0 6px;">Dear <strong>${esc(name)}</strong>,</p>
     <p style="margin:0 0 16px;"><strong>Congratulations!</strong></p>
-    <p style="margin:0 0 16px;">We are pleased to offer you the position of <strong>${pos}</strong> in the <strong>${dept}</strong> department at <strong>Maxvolt Energy Industries Limited</strong>.</p>
+    <p style="margin:0 0 16px;">We are pleased to offer you the position of <strong>${esc(pos)}</strong> in the <strong>${esc(dept)}</strong> department at <strong>Maxvolt Energy Industries Limited</strong>.</p>
     <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;">
-      <tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;width:40%;">Designation</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${pos}</td></tr>
-      <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Department</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${dept}</td></tr>
+      <tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;width:40%;">Designation</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${esc(pos)}</td></tr>
+      <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Department</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${esc(dept)}</td></tr>
       <tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Date of Joining</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${jDateStr}</td></tr>
-      <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Work Location</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${loc}</td></tr>
-      ${reporting_to ? `<tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Reporting To</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${reporting_to}</td></tr>` : ''}
+      <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Work Location</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${esc(loc)}</td></tr>
+      ${reporting_to ? `<tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Reporting To</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${esc(reporting_to)}</td></tr>` : ''}
       <tr style="background:#f9fafb;"><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Probation Period</td><td style="padding:8px 12px;border:1px solid #e5e7eb;">${probation} months</td></tr>
       <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;">Annual CTC</td><td style="padding:8px 12px;border:1px solid #e5e7eb;font-weight:600;color:#ea580c;">₹${fmtIN(ctc)} per annum</td></tr>
     </table>
     <h3 style="margin:20px 0 8px;font-size:14px;">Salary Structure</h3>
     ${salaryTableHtml}
-    ${notes ? `<div style="background:#f9fafb;border-left:4px solid #ea580c;padding:12px;margin:16px 0;font-size:13px;"><strong>Additional Note:</strong> ${notes}</div>` : ''}
+    ${notes ? `<div style="background:#f9fafb;border-left:4px solid #ea580c;padding:12px;margin:16px 0;font-size:13px;"><strong>Additional Note:</strong> ${esc(notes)}</div>` : ''}
     <p style="margin:16px 0;font-size:13px;">This offer is valid until <strong>${validTillStr}</strong>.</p>
     <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:16px;margin:20px 0;">
       <p style="margin:0 0 8px;font-weight:600;font-size:14px;">Action Required: Accept Your Offer</p>
@@ -12942,7 +12961,9 @@ router.post('/:name', async (req, res) => {
 </div>`;
 
       // The PDF is built first: if it fails, nothing is sent and the candidate record stays as it was.
-      const pdfParams = buildOfferPdfParams(cand, { ...p, offer_ref: offerRef });
+      const attached = await Offers.loadAttachments(input.attachments);
+      if (attached.error) return res.json({ success: false, error: attached.error });
+      const pdfParams = buildOfferPdfParams(cand, { ...input, offer_ref: offerRef });
       let pdfBuffer;
       try { pdfBuffer = await buildOfferLetterPdf(pdfParams); }
       catch (pdfErr) {
@@ -12954,7 +12975,7 @@ router.post('/:name', async (req, res) => {
       const offerData = {
         ...cand,
         status: 'offered',
-        timeline: HLC.appendTimeline(cand, { type: 'status', from: cand.status, to: 'offered', text: 'Offer letter released', by: cu?.id, by_name: cu?.full_name || '' }),
+        timeline: HLC.appendTimeline(cand, { type: 'status', from: cand.status, to: 'offered', text: 'Offer letter released', by: actor.id, by_name: actor.name }),
         offer_ref: offerRef,
         offer_accept_token: acceptToken,
         offer_letter_date: new Date().toISOString(),
@@ -12965,27 +12986,31 @@ router.post('/:name', async (req, res) => {
         department: dept,
         location: loc,
         reporting_to: reporting_to || '',
+        reporting_manager_id: input.reporting_manager_id,
+        offer_issue_date: input.issue_date,
+        offer_recipient_email: recipient,
+        offer_notice_period_days: pdfParams.noticeDays,
+        offer_source: source,
         probation_months: probation,
         salary: sal,
         offer_valid_till: validTill.toISOString(),
         offer_status: 'sent',
         employment_type: pdfParams.employmentType,
-        notice_period_days: pdfParams.noticeDays,
-        ...(overrideReason && cand.doc_collection_status !== 'verified' ? { offer_document_override: { reason: overrideReason, by: cu.id, by_name: cu.full_name || '', at: new Date().toISOString() } } : {}),
+        ...(overrideReason && cand.doc_collection_status !== 'verified' ? { offer_document_override: { reason: overrideReason, by: cu.id, by_name: actor.name, at: new Date().toISOString() } } : {}),
       };
       await run("UPDATE entities SET status='offered', data=$1 WHERE id=$2", [JSON.stringify(offerData), candidate_id]);
 
       let emailError = null;
       try {
         await sendEmail({
-          to:      cand.email,
+          to:      recipient,
           meta:    { source: 'offer-letter', confirm: true },
           subject: `Offer Letter – ${pos} at Maxvolt Energy Industries Limited`,
           html:    emailHtml,
-          attachments: pdfBuffer ? [{
+          attachments: [{
             filename: `Offer_Letter_${name.replace(/\s+/g, '_')}.pdf`,
             content:  pdfBuffer,
-          }] : [],
+          }, ...attached.files],
         });
       } catch (emailErr) {
         console.error('sendOfferLetter email failed:', emailErr.message);
@@ -12993,11 +13018,12 @@ router.post('/:name', async (req, res) => {
       }
 
       await recordOfferVersion({
-        candidate_id, cand, params: pdfParams, input: p, pdfBuffer, filename: `Offer_Letter_${name.replace(/\s+/g, '_')}.pdf`,
-        status: emailError ? 'failed' : 'sent', error: emailError, offerRef, cu, overrideReason: cand.doc_collection_status !== 'verified' ? overrideReason : '',
+        candidate_id, cand, params: pdfParams, input, pdfBuffer, recipient, source, filename: `Offer_Letter_${name.replace(/\s+/g, '_')}.pdf`,
+        status: emailError ? 'failed' : 'sent', error: emailError, offerRef, cu: { id: actor.id, full_name: actor.name }, overrideReason: cand.doc_collection_status !== 'verified' ? overrideReason : '',
       });
 
-      return res.json({ success: true, accept_link: acceptLink, offer_ref: offerRef, email_error: emailError });
+      await Offers.offerAudit(candidate_id, emailError ? 'send_failed' : 'sent', actor, { recipient_email: recipient, offer_ref: offerRef, annual_ctc: ctc, ...(emailError ? { error: emailError } : {}), ...(overrideReason && cand.doc_collection_status !== 'verified' ? { override_reason: overrideReason } : {}) });
+      return res.json({ success: true, accept_link: acceptLink, offer_ref: offerRef, recipient_email: recipient, email_error: emailError });
     }
 
     /* ── Get Offer by Accept Token (public) ─────────── */
@@ -13088,6 +13114,7 @@ router.post('/:name', async (req, res) => {
         consent_pdf_base64_cached: consentPdfUrl ? null : consentPdfBase64,
       };
       await run("UPDATE entities SET status='offer_accepted', data=$1 WHERE id=$2", [JSON.stringify(updated), row.id]);
+      await (await import('./offers.js')).offerAudit(row.id, 'accepted', { id: '', name: updated.consent_full_name || updated.full_name || 'Candidate' }, { offer_ref: updated.offer_ref || '' });
 
       // Notify HR
       const hrEmail = await (await import('../utils/hrMail.js')).hrRecipients(process.env.HR_EMAIL || 'hr@maxvoltenergy.com');
@@ -13158,10 +13185,13 @@ router.post('/:name', async (req, res) => {
       // Accounts can no longer be created by the person themselves (the /register page is closed). HR starts the
       // onboarding (Onboarding → Start onboarding), which creates the login and emails the personal link. This call
       // therefore no longer emails a sign-up link; it hands the candidate's details over to that form.
+      const Offers = await import('./offers.js');
+      const blocked = await Offers.onboardingProblem(candidate_id);
+      if (blocked) return res.json({ success: false, error: blocked });
       return res.json({
         success: false, use_onboarding: true,
-        error: 'Joiners are now invited by HR: open Onboarding and use "Start onboarding" — the candidate\'s name, email and phone are pre-filled.',
-        prefill: { first_name: String(cand.full_name || '').split(' ')[0] || '', last_name: String(cand.full_name || '').split(' ').slice(1).join(' '), personal_email: cand.email || '', phone: cand.phone || '', candidate_id },
+        error: 'Joiners are now invited by HR: open Onboarding and use "Start onboarding" — the offer details are pre-filled.',
+        prefill: await Offers.onboardingPrefill({ ...cand, id: candidate_id }),
       });
     }
 

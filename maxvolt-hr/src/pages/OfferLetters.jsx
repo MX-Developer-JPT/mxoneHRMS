@@ -20,11 +20,16 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import OfferBuilder from '@/components/offers/OfferBuilder';
 import { openPdfBlob } from '@/utils/letterhead';
-import NewOfferDialog from '@/components/offers/NewOfferDialog';
+import OfferRegister from '@/components/offers/OfferRegister';
+import EmployeeProfileDialog from '@/components/offers/EmployeeProfileDialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
 function fmt(n) { return Number(n || 0).toLocaleString('en-IN'); }
+// where the offer came from (the server applies the same rule)
+const sourceOf = (c) => (c.requisition_id || c.job_requisition_id || c.job_id ? 'mrf' : c.offer_source === 'direct' || c.source === 'direct_offer' ? 'direct' : 'recruitment');
+const SOURCE_BADGE = { direct: ['Direct', 'bg-purple-100 text-purple-800'], mrf: ['MRF', 'bg-blue-100 text-blue-800'], recruitment: ['Recruitment', 'bg-slate-100 text-slate-700'] };
 
 const STATUS_CONFIG = {
   offered:        { label: 'Sent',         color: 'bg-teal-100 text-teal-800',      icon: Send },
@@ -144,16 +149,17 @@ function CandidateDocReviewDialog({ candidate, onClose, onRefresh }) {
 
 export default function OfferLetters() {
   const [candidates, setCandidates] = useState([]);
-  const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [dialogCandidate, setDialogCandidate] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState('all');
+  const [profileCandidate, setProfileCandidate] = useState(null);
+  const isHr = (r) => ['hr', 'admin'].includes(r);
   const [role, setRole] = useState('');
   useEffect(() => { base44.auth.me().then(u => setRole(u?.custom_role || u?.role || '')).catch(() => {}); }, []);
   const [docDialogCandidate, setDocDialogCandidate] = useState(null);
-  const [invitingId, setInvitingId] = useState(null);
   const [sendingDocReqId, setSendingDocReqId] = useState(null);
   const [downloadingConsentId, setDownloadingConsentId] = useState(null);
 
@@ -162,15 +168,11 @@ export default function OfferLetters() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [all, depts] = await Promise.all([
-        base44.entities.Candidate.list('-created_date', 500),
-        base44.entities.Department.list('name', 200).catch(() => []),
-      ]);
+      const all = await base44.entities.Candidate.list('-created_date', 500);
       const relevant = all.filter(c =>
         ['selected', 'interview_done', 'offered', 'offer_accepted', 'offer_declined', 'joined'].includes(c.status)
       );
       setCandidates(relevant);
-      setDepartments(depts.map(d => d.name).filter(Boolean).sort());
       return relevant;
     } catch (e) { toast.error('Failed to load data'); return []; }
     finally { setLoading(false); }
@@ -179,10 +181,7 @@ export default function OfferLetters() {
   const handleMarkDeclined = async (c) => {
     if (!confirm(`Mark offer for ${c.full_name} as declined by candidate?`)) return;
     try {
-      await base44.entities.Candidate.update(c.id, {
-        status: 'offer_declined',
-        offer_declined_at: new Date().toISOString(),
-      });
+      await base44.functions.invoke('of_mark_declined', { candidate_id: c.id });
       toast.success('Offer marked as declined');
       loadData();
     } catch (e) { toast.error(e.message); }
@@ -216,22 +215,6 @@ export default function OfferLetters() {
     setDownloadingConsentId(null);
   };
 
-  const handleInvite = async (c) => {
-    setInvitingId(c.id);
-    try {
-      const res = await base44.functions.invoke('inviteJoinerToApp', { candidate_id: c.id });
-      if (res.data?.use_onboarding) {
-        // joiners are invited by HR now — hand the details to the Onboarding page
-        sessionStorage.setItem('onboarding_prefill', JSON.stringify(res.data.prefill || {}));
-        window.location.assign('/OnboardingHR');
-        return;
-      }
-      if (res.data?.success) { toast.success('Invitation sent to ' + c.email); loadData(); }
-      else toast.error(res.data?.error || 'Failed to send invite');
-    } catch (e) { toast.error(e.message); }
-    setInvitingId(null);
-  };
-
   const copyAcceptLink = (c) => {
     const base = 'https://maxone.maxvoltenergy.com';
     if (c.offer_accept_token) {
@@ -246,7 +229,7 @@ export default function OfferLetters() {
     const q = search.toLowerCase();
     const matchSearch = !q || c.full_name?.toLowerCase().includes(q) || c.email?.toLowerCase().includes(q) || c.position_applied?.toLowerCase().includes(q) || c.department?.toLowerCase().includes(q);
     const matchStatus = statusFilter === 'all' || c.status === statusFilter;
-    return matchSearch && matchStatus;
+    return matchSearch && matchStatus && (sourceFilter === 'all' || sourceOf(c) === sourceFilter);
   });
 
   const stats = {
@@ -272,14 +255,21 @@ export default function OfferLetters() {
             <p className="text-gray-500 mt-1">Manage, track, and send offer letters to selected candidates</p>
           </div>
           <div className="flex gap-2">
-            <Button onClick={() => setCreating(true)} size="sm" className="gap-2 bg-green-600 hover:bg-green-700 text-white">
-              <FileText className="w-4 h-4" /> Create offer letter
-            </Button>
+            {isHr(role) && (
+              <Button onClick={() => setCreating(true)} size="sm" className="gap-2 bg-green-600 hover:bg-green-700 text-white">
+                <FileText className="w-4 h-4" /> Direct offer letter
+              </Button>
+            )}
             <Button onClick={loadData} variant="outline" size="sm" className="gap-2">
               <RefreshCw className="w-4 h-4" /> Refresh
             </Button>
           </div>
         </div>
+
+        <Tabs defaultValue="candidates" className="space-y-4">
+        <TabsList><TabsTrigger value="candidates">Candidates</TabsTrigger><TabsTrigger value="register">Offer register</TabsTrigger></TabsList>
+        <TabsContent value="register"><OfferRegister /></TabsContent>
+        <TabsContent value="candidates" className="space-y-6">
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -325,6 +315,18 @@ export default function OfferLetters() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="w-40">
+                <Label className="text-xs">Source</Label>
+                <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All sources</SelectItem>
+                    <SelectItem value="direct">Direct</SelectItem>
+                    <SelectItem value="mrf">MRF</SelectItem>
+                    <SelectItem value="recruitment">Recruitment</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -346,7 +348,7 @@ export default function OfferLetters() {
               <div className="text-center py-16 text-gray-400">
                 <FileCheck className="w-12 h-12 mx-auto mb-3 opacity-30" />
                 <p className="font-medium">No candidates found</p>
-                <p className="text-sm mt-1">Select candidates from the Recruitment page to create offer letters</p>
+                <p className="text-sm mt-1">Select candidates in Recruitment, or create a direct offer letter</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -373,6 +375,8 @@ export default function OfferLetters() {
                               <StatusIcon className="w-3 h-3" />
                               {sc.label}
                             </Badge>
+                            <Badge className={SOURCE_BADGE[sourceOf(c)][1]}>{SOURCE_BADGE[sourceOf(c)][0]}</Badge>
+                            {c.employee_user_id && <Badge className="bg-green-100 text-green-800">Employee {c.employee_code || 'linked'}</Badge>}
                             {isJoiningToday && c.status === 'offer_accepted' && (
                               <Badge className="bg-purple-100 text-purple-800 animate-pulse">Joining Today!</Badge>
                             )}
@@ -439,7 +443,7 @@ export default function OfferLetters() {
 
                           {/* Opens the offer builder. Sending before the documents are verified needs an HR/admin
                               reason, enforced by the server (sendOfferLetter). */}
-                          <Button
+                          {(sourceOf(c) !== 'direct' || isHr(role)) && <Button
                             size="sm"
                             variant={c.status === 'offered' ? 'outline' : 'default'}
                             onClick={() => setDialogCandidate(c)}
@@ -449,7 +453,7 @@ export default function OfferLetters() {
                               ? <><RefreshCw className="w-3 h-3 mr-1" /> Resend Offer</>
                               : <><Send className="w-3 h-3 mr-1" /> Offer Letter</>
                             }
-                          </Button>
+                          </Button>}
 
                           {/* Copy acceptance link */}
                           {c.status === 'offered' && c.offer_accept_token && (
@@ -466,19 +470,10 @@ export default function OfferLetters() {
                             </Button>
                           )}
 
-                          {/* Invite to app */}
-                          {isJoiningToday && c.status === 'offer_accepted' && (
-                            <Button
-                              size="sm"
-                              onClick={() => handleInvite(c)}
-                              disabled={invitingId === c.id}
-                              className="bg-purple-600 hover:bg-purple-700 text-white"
-                            >
-                              {invitingId === c.id
-                                ? <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                                : <CalendarCheck className="w-3 h-3 mr-1" />
-                              }
-                              Invite to App
+                          {/* Create the employee profile from the offer, or link the one that exists */}
+                          {(c.status === 'offer_accepted' || c.status === 'joined') && (
+                            <Button size="sm" onClick={() => setProfileCandidate(c)} className="bg-purple-600 hover:bg-purple-700 text-white">
+                              <User className="w-3 h-3 mr-1" /> Employee profile
                             </Button>
                           )}
 
@@ -506,6 +501,9 @@ export default function OfferLetters() {
             )}
           </CardContent>
         </Card>
+
+        </TabsContent>
+        </Tabs>
       </div>
 
       {/* Send/Resend Dialog */}
@@ -520,9 +518,8 @@ export default function OfferLetters() {
           {dialogCandidate && (
             <OfferBuilder
               key={dialogCandidate.id}
-              candidate={dialogCandidate}
-              departments={departments}
-              canOverride={['hr', 'admin'].includes(role)}
+              candidateId={dialogCandidate.id}
+              canOverride={isHr(role)}
               onClose={() => setDialogCandidate(null)}
               onRefresh={loadData}
             />
@@ -530,8 +527,17 @@ export default function OfferLetters() {
         </DialogContent>
       </Dialog>
 
-      <NewOfferDialog open={creating} candidates={candidates} onClose={() => setCreating(false)}
-        onPick={(c) => { setCreating(false); setDialogCandidate(c); loadData(); }} />
+      {/* Direct offer: the same form, starting empty */}
+      <Dialog open={creating} onOpenChange={open => { if (!open) setCreating(false); }}>
+        <DialogContent className="max-w-3xl" onInteractOutside={e => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><FileCheck className="w-5 h-5 text-green-600" />Direct offer letter</DialogTitle>
+          </DialogHeader>
+          {creating && <OfferBuilder canOverride={isHr(role)} onClose={() => setCreating(false)} onRefresh={loadData} />}
+        </DialogContent>
+      </Dialog>
+
+      <EmployeeProfileDialog candidate={profileCandidate} onClose={() => setProfileCandidate(null)} onDone={loadData} />
 
       {/* Document Review Dialog */}
       <Dialog open={!!docDialogCandidate} onOpenChange={open => { if (!open) setDocDialogCandidate(null); }}>

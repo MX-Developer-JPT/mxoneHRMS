@@ -221,6 +221,10 @@ const HANDLERS = {
     const salary = await salaryFor(d.salary, d.pf_applicable !== false);
     if (salary) errs.push(...salary.errors);
     if (salary && d.salary.effective_from && !isDate(d.salary.effective_from)) errs.push('Salary effective date is not valid');
+    // an onboarding started from an accepted offer joins the candidate record to this one new profile
+    const candidateId = clean(d.candidate_id, 60);
+    const Offers = candidateId ? await import('./offers.js') : null;
+    if (Offers) { const blocked = await Offers.onboardingProblem(candidateId); if (blocked) errs.unshift(blocked); }
     if (errs.length) return res.json({ success: false, error: errs[0], errors: errs });
     const personal = clean(d.personal_email).toLowerCase();
     const official = clean(d.official_email).toLowerCase();
@@ -255,6 +259,7 @@ const HANDLERS = {
     if (existingEmp) { empId = existingEmp.id; await run("UPDATE entities SET data=$1, status='pending', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...JSON.parse(existingEmp.data), ...data, id: empId, user_id: user.id }), empId]); }
     else { empId = uuidv4(); await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'pending',$3)", [empId, user.id, JSON.stringify({ id: empId, user_id: user.id, ...data })]); }
     const emp = { id: empId, ...data };
+    if (Offers) await Offers.onboardingStarted(candidateId, user.id, cu);
     if (salary) await saveSalaryStructure(user.id, salary.values, d.salary.effective_from || d.date_of_joining, cu.id);
 
     const hrName = (await one('SELECT full_name FROM users WHERE id=$1', [cu.id]))?.full_name || 'HR';
@@ -288,6 +293,7 @@ const HANDLERS = {
     if (clean(p.reason).length < 3) return res.json({ success: false, error: 'Please give a reason' });
     await run("DELETE FROM entities WHERE user_id=$1 AND type IN ('OnboardingInvite','Employee','Document','AppTourProgress','SalaryStructure')", [p.user_id]);
     await run('DELETE FROM users WHERE id=$1', [p.user_id]);
+    await (await import('./offers.js')).onboardingCancelled(p.user_id, cu);
     await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'OnboardingLog',NULL,'cancelled',$2)", [uuidv4(), JSON.stringify({ action: 'cancelled', name: emp?.display_name, employee_code: emp?.employee_code, login_email: user.email, reason: clean(p.reason, 300), by: cu.id, at: nowIso() })]);
     return res.json({ success: true });
   },
@@ -451,6 +457,8 @@ const HANDLERS = {
       if (r.payslips_url) await mkDoc('other', `Payslips — ${r.company}`, r.payslips_url);
     }
     for (const pol of policies) if (pol.card_url) await mkDoc('other', `${pol.insurance_type} policy card`, pol.card_url);
+
+    if (updated.candidate_id) { try { await (await import('./offers.js')).onboardingCompleted(updated.candidate_id, cu.id); } catch (e) { console.warn('[onboarding] candidate update failed:', e.message); } }
 
     // Activate: the login becomes a normal employee
     await run("UPDATE users SET role='employee', custom_role='employee', updated_at=NOW()::TEXT WHERE id=$1", [cu.id]);

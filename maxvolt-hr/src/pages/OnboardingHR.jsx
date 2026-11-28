@@ -189,7 +189,13 @@ export default function OnboardingHR() {
     })();
     try { // details handed over from the recruitment screen
       const pre = JSON.parse(sessionStorage.getItem('onboarding_prefill') || 'null');
-      if (pre) { sessionStorage.removeItem('onboarding_prefill'); setF(x => ({ ...x, first_name: pre.first_name || '', last_name: pre.last_name || '', personal_email: pre.personal_email || '', phone: pre.phone || '' })); setTab('start'); }
+      if (pre) {
+        sessionStorage.removeItem('onboarding_prefill');
+        const keys = ['first_name', 'last_name', 'personal_email', 'phone', 'department', 'designation', 'date_of_joining', 'work_location', 'employment_type', 'reporting_manager_id', 'no_reporting_manager', 'candidate_id', 'candidate_name'];
+        const given = Object.fromEntries(keys.filter(k => pre[k] !== undefined && pre[k] !== '').map(k => [k, pre[k]]));
+        setF(x => ({ ...x, ...given, salary: pre.annual_ctc ? { ...x.salary, ctc: String(pre.annual_ctc), medical_contribution: pre.medical_contribution || '' } : x.salary }));
+        setTab('start');
+      }
     } catch { /* ignore */ }
   }, []);
 
@@ -244,6 +250,13 @@ export default function OnboardingHR() {
         <TabsContent value="tracker">{tab === 'tracker' && <Tracker refreshKey={tick} onResent={setSent} />}</TabsContent>
 
         <TabsContent value="start" className="space-y-4">
+          {f.candidate_id && (
+            <div className="rounded-lg border border-purple-200 bg-purple-50 p-3 text-sm text-purple-900 flex flex-wrap items-center gap-2">
+              <span>Creating the employee profile of candidate <b>{f.candidate_name}</b> from the accepted offer. Check the pre-filled details; the candidate record will be linked to this profile.</span>
+              <Button size="sm" variant="ghost" className="h-7 text-xs ml-auto" onClick={() => setF(blank())}>Clear and start a different person</Button>
+            </div>
+          )}
+
           <Sec title="1 · Person">
             <F label="First name" req><Input value={f.first_name} onChange={e => set('first_name', e.target.value)} /></F>
             <F label="Middle name"><Input value={f.middle_name} onChange={e => set('middle_name', e.target.value)} /></F>

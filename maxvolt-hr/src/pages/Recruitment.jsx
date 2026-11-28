@@ -14,273 +14,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { useSearchParams, Link } from 'react-router-dom';
-import { openPdfBlob } from '@/utils/letterhead';
+import OfferBuilder from '@/components/offers/OfferBuilder';
 import CandidateDetailDialog from '../components/recruitment/CandidateDetailDialog';
 import CvReviewDialog from '../components/recruitment/CvReviewDialog';
 import { rh, STATUS as LC_STATUS, statusLabel, statusCls, manualNext, BOARD_STAGES } from '@/lib/hiring';
 import CandidateScoreCard from '../components/recruitment/CandidateScoreCard';
 
 const TODAY = new Date().toISOString().slice(0, 10);
-
-function calcSalary(annualCTC) {
-  if (!annualCTC || annualCTC <= 0) return null;
-  const PF_CEIL = 25000, ESI_CEIL = 21000;
-  const m = Math.round(annualCTC / 12);
-  const basic = Math.round(m * 0.5);
-  const hra = Math.round(basic * 0.4);
-  const isPF = basic > ESI_CEIL, isESI = basic <= ESI_CEIL;
-  let bonus, bonusType;
-  if (annualCTC <= 1000000) { bonus = Math.round(basic * 12 * 0.0833 / 12); bonusType = 'Bonus (8.33% of Basic)'; }
-  else { const vp = annualCTC <= 1500000 ? 0.05 : annualCTC <= 2000000 ? 0.08 : annualCTC <= 2500000 ? 0.12 : 0.15; bonus = Math.round(annualCTC * vp / 12); bonusType = `VPP (${Math.round(vp * 100)}% of CTC)`; }
-  const medical = 330;
-  const pfBase = isPF ? Math.min(basic, PF_CEIL) : 0;
-  const pfEmp = Math.round(pfBase * 0.12);
-  const pfEmployer = Math.round(pfBase * 0.13);
-  const contribNoESI = pfEmployer + medical + bonus;
-  const grossEst = m - contribNoESI;
-  const esiEmp = isESI ? Math.round(grossEst * 0.0075) : 0;
-  const esiEmployer = isESI ? Math.round(grossEst * 0.0325) : 0;
-  const contrib = contribNoESI + esiEmployer;
-  const gross = m - contrib;
-  const conv = Math.max(gross - basic - hra, 0);
-  const net = gross - pfEmp - esiEmp;
-  return {
-    monthly_ctc: m, annual_ctc: annualCTC,
-    basic_monthly: basic, basic_annual: basic * 12,
-    hra_monthly: hra, hra_annual: hra * 12,
-    conveyance_monthly: conv, conveyance_annual: conv * 12,
-    gross_monthly: gross, gross_annual: gross * 12,
-    pf_emp_monthly: pfEmp, pf_emp_annual: pfEmp * 12,
-    esi_emp_monthly: esiEmp, esi_emp_annual: esiEmp * 12,
-    pf_employer_monthly: pfEmployer, pf_employer_annual: pfEmployer * 12,
-    esi_employer_monthly: esiEmployer, esi_employer_annual: esiEmployer * 12,
-    medical_monthly: medical, medical_annual: medical * 12,
-    bonus_monthly: bonus, bonus_annual: bonus * 12, bonusType,
-    contribution_monthly: contrib, contribution_annual: contrib * 12,
-    net_monthly: net, net_annual: net * 12,
-    isPF, isESI,
-  };
-}
-
-function fmt(n) { return Number(n || 0).toLocaleString('en-IN'); }
-
-function OfferLetterDialog({ candidate, onClose, onRefresh }) {
-  const defaultJoining = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const [form, setForm] = useState({
-    joining_date: defaultJoining,
-    designation: candidate?.position_applied || '',
-    department: candidate?.department || '',
-    location: 'Ghaziabad, Uttar Pradesh',
-    reporting_to: '',
-    annual_ctc: candidate?.expected_ctc || 0,
-    probation_months: 6,
-    offer_valid_days: 7,
-    notes: '',
-  });
-  const [previewing, setPreviewing] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [acceptLink, setAcceptLink] = useState('');
-
-  const sal = calcSalary(Number(form.annual_ctc) || 0);
-
-  const setF = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
-
-  const handlePreview = async () => {
-    setPreviewing(true);
-    try {
-      const res = await base44.functions.invoke('previewOfferLetterPdf', {
-        candidate_id: candidate.id,
-        joining_date: form.joining_date,
-        designation: form.designation,
-        department: form.department,
-        location: form.location,
-        reporting_to: form.reporting_to,
-        annual_ctc: Number(form.annual_ctc),
-        probation_months: Number(form.probation_months),
-        offer_valid_days: Number(form.offer_valid_days),
-      });
-      if (res.data?.success) {
-        openPdfBlob(res.data.base64, res.data.filename);
-      } else {
-        toast.error(res.data?.error || 'Failed to generate preview');
-      }
-    } catch (e) { toast.error(e.message); }
-    setPreviewing(false);
-  };
-
-  const handleSend = async () => {
-    if (!candidate.email) { toast.error('Candidate has no email address'); return; }
-    setSending(true);
-    try {
-      const res = await base44.functions.invoke('sendOfferLetter', {
-        candidate_id: candidate.id,
-        joining_date: form.joining_date,
-        designation: form.designation,
-        department: form.department,
-        location: form.location,
-        reporting_to: form.reporting_to,
-        annual_ctc: Number(form.annual_ctc),
-        probation_months: Number(form.probation_months),
-        offer_valid_days: Number(form.offer_valid_days),
-        notes: form.notes,
-      });
-      if (res.data?.success) {
-        setSent(true);
-        setAcceptLink(res.data.accept_link || '');
-        if (res.data.email_error) {
-          toast.warning(`Offer saved but email failed: ${res.data.email_error}. Check BREVO_API_KEY in Railway.`);
-        } else {
-          toast.success('Offer letter sent to ' + candidate.email);
-        }
-        onRefresh();
-      } else {
-        toast.error(res.data?.error || 'Failed to send offer letter');
-      }
-    } catch (e) { toast.error(e.message); }
-    setSending(false);
-  };
-
-  if (sent) return (
-    <div className="text-center py-6 space-y-4">
-      <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto">
-        <Send className="w-8 h-8 text-green-600" />
-      </div>
-      <h3 className="font-semibold text-lg text-gray-800">Offer Letter Sent!</h3>
-      <p className="text-sm text-gray-500">Sent to <strong>{candidate.email}</strong></p>
-      {acceptLink && (
-        <div className="bg-gray-50 rounded-lg p-3 text-left">
-          <p className="text-xs text-gray-500 mb-1">Candidate acceptance link:</p>
-          <div className="flex items-center gap-2">
-            <code className="text-xs text-blue-700 flex-1 truncate">{acceptLink}</code>
-            <button onClick={() => { navigator.clipboard.writeText(acceptLink); toast.success('Copied!'); }}
-              className="p-1 hover:bg-gray-200 rounded">
-              <Copy className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-      )}
-      <Button onClick={onClose} variant="outline">Close</Button>
-    </div>
-  );
-
-  return (
-    <div className="space-y-4 max-h-[80vh] overflow-y-auto pr-1">
-      <p className="text-sm text-gray-500">Configure and send offer letter to <strong>{candidate.full_name}</strong> ({candidate.email})</p>
-
-      <div className="grid md:grid-cols-2 gap-3">
-        <div>
-          <Label className="text-xs">Joining Date *</Label>
-          <Input type="date" value={form.joining_date} onChange={e => setF('joining_date', e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-xs">Probation Period (months)</Label>
-          <Input type="number" value={form.probation_months} onChange={e => setF('probation_months', e.target.value)} min="0" max="24" />
-        </div>
-        <div>
-          <Label className="text-xs">Designation</Label>
-          <Input value={form.designation} onChange={e => setF('designation', e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-xs">Department</Label>
-          <Input value={form.department} onChange={e => setF('department', e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-xs">Work Location</Label>
-          <Input value={form.location} onChange={e => setF('location', e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-xs">Reporting To</Label>
-          <Input value={form.reporting_to} onChange={e => setF('reporting_to', e.target.value)} placeholder="Manager name" />
-        </div>
-        <div>
-          <Label className="text-xs">Annual CTC (₹)</Label>
-          <Input type="number" value={form.annual_ctc} onChange={e => setF('annual_ctc', e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-xs">Offer Valid for (days)</Label>
-          <Input type="number" value={form.offer_valid_days} onChange={e => setF('offer_valid_days', e.target.value)} min="1" max="30" />
-        </div>
-        <div className="md:col-span-2">
-          <Label className="text-xs">Additional Notes (optional)</Label>
-          <Textarea value={form.notes} onChange={e => setF('notes', e.target.value)} rows={2} placeholder="Any special terms or notes..." />
-        </div>
-      </div>
-
-      {/* Live Salary Preview */}
-      {Number(form.annual_ctc) > 0 && (
-        <div className="border rounded-lg overflow-hidden">
-          <div className="bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600">Salary Structure Preview</div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="text-left px-3 py-1.5 border-b">Component</th>
-                <th className="text-right px-3 py-1.5 border-b">Annual (₹)</th>
-                <th className="text-right px-3 py-1.5 border-b">Monthly (₹)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                ['Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly],
-                ['HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly],
-                ['Conveyance (Balance)', sal.conveyance_annual, sal.conveyance_monthly],
-              ].map(([l, a, m]) => (
-                <tr key={l} className="border-b">
-                  <td className="px-3 py-1">{l}</td>
-                  <td className="px-3 py-1 text-right">{fmt(a)}</td>
-                  <td className="px-3 py-1 text-right">{fmt(m)}</td>
-                </tr>
-              ))}
-              <tr className="bg-blue-50 font-semibold border-b">
-                <td className="px-3 py-1.5">Total Gross (A)</td>
-                <td className="px-3 py-1.5 text-right">{fmt(sal.gross_annual)}</td>
-                <td className="px-3 py-1.5 text-right">{fmt(sal.gross_monthly)}</td>
-              </tr>
-              {sal.isPF && (
-                <tr className="border-b text-gray-500">
-                  <td className="px-3 py-1">PF Employee 12% (deduction)</td>
-                  <td className="px-3 py-1 text-right">-{fmt(sal.pf_emp_annual)}</td>
-                  <td className="px-3 py-1 text-right">-{fmt(sal.pf_emp_monthly)}</td>
-                </tr>
-              )}
-              {sal.isESI && (
-                <tr className="border-b text-gray-500">
-                  <td className="px-3 py-1">ESI Employee 0.75% (deduction)</td>
-                  <td className="px-3 py-1 text-right">-{fmt(sal.esi_emp_annual)}</td>
-                  <td className="px-3 py-1 text-right">-{fmt(sal.esi_emp_monthly)}</td>
-                </tr>
-              )}
-              <tr className="bg-green-50 font-semibold border-b">
-                <td className="px-3 py-1.5">Net Take-Home (A-B)</td>
-                <td className="px-3 py-1.5 text-right">{fmt(sal.net_annual)}</td>
-                <td className="px-3 py-1.5 text-right">{fmt(sal.net_monthly)}</td>
-              </tr>
-              <tr className="bg-orange-50 font-bold">
-                <td className="px-3 py-1.5">Annual CTC (A+C)</td>
-                <td className="px-3 py-1.5 text-right">{fmt(sal.annual_ctc)}</td>
-                <td className="px-3 py-1.5 text-right">{fmt(sal.monthly_ctc)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <div className="flex gap-3 pt-2">
-        <Button variant="outline" onClick={handlePreview} disabled={previewing} className="flex-1">
-          {previewing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileCheck className="w-4 h-4 mr-2" />}
-          Preview Letter
-        </Button>
-        <Button onClick={handleSend} disabled={sending || !form.joining_date} className="flex-1 bg-green-600 hover:bg-green-700">
-          {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-          Send to Candidate
-        </Button>
-      </div>
-      <p className="text-xs text-gray-400 text-center">
-        Sends offer letter + consent form to {candidate.email} with a digital acceptance link
-      </p>
-    </div>
-  );
-}
 
 const STATUS_COLORS = Object.fromEntries(Object.entries(LC_STATUS).filter(([k]) => k !== 'interview_done').map(([k, v]) => [k, v.cls]));
 
@@ -661,6 +401,8 @@ export default function Recruitment() {
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   const [review, setReview] = useState({ open: false, requisitionId: '', candidates: [] });
   const [offerDialogCandidate, setOfferDialogCandidate] = useState(null);
+  const [offerOverride, setOfferOverride] = useState(false);
+  useEffect(() => { base44.auth.me().then(u => setOfferOverride([u?.role, u?.custom_role].some(r => r === 'hr' || r === 'admin'))).catch(() => {}); }, []);
   const [scorecardCandidate, setScorecardCandidate] = useState(null);
   const [rejectCandidate, setRejectCandidate] = useState(null);
   const [invitingId, setInvitingId] = useState(null);
@@ -1581,7 +1323,7 @@ export default function Recruitment() {
 
       {/* Offer Letter Dialog */}
       <Dialog open={!!offerDialogCandidate} onOpenChange={open => { if (!open) setOfferDialogCandidate(null); }}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileCheck className="w-5 h-5 text-green-600" />
@@ -1589,8 +1331,10 @@ export default function Recruitment() {
             </DialogTitle>
           </DialogHeader>
           {offerDialogCandidate && (
-            <OfferLetterDialog
-              candidate={offerDialogCandidate}
+            <OfferBuilder
+              key={offerDialogCandidate.id}
+              candidateId={offerDialogCandidate.id}
+              canOverride={offerOverride}
               onClose={() => setOfferDialogCandidate(null)}
               onRefresh={loadData}
             />
