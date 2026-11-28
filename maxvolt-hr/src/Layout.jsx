@@ -268,6 +268,7 @@ const hrMenuGroups = [
   { label: 'Employees', items: [
     { name: 'Employees',               icon: Users,           page: 'Employees' },
     { name: 'Org Chart',               icon: Network,         page: 'OrgChart' },
+    { name: 'Celebrations',            icon: Cake,            page: 'CelebrationList' },
     { name: 'Onboarding',              icon: UserPlus,        page: 'OnboardingHR' },
     { name: 'Older Sign-up Approvals', icon: UserPlus,        page: 'OnboardingApproval' },
     { name: 'Employee Documents',      icon: FolderOpen,      page: 'EmployeeDocuments' },
