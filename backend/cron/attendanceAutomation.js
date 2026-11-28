@@ -1,7 +1,7 @@
 // Nightly attendance automation — runs unattended (see server.js for the schedule).
 // 1. Employees with no Attendance row at all on a completed working day → marked absent.
 // 2. Employees who checked in but never checked out before 2 AM the next day → marked absent.
-import { isRuledOd, OD_RULES_FROM } from '../utils/odRules.js';
+import { isRuledOd, OD_RULES_FROM, absentForNoCheckout } from '../utils/odRules.js';
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { buildSessions, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, isOvernightShift, shiftEndDateTime } from '../routes/attendancelog.js';
@@ -53,7 +53,7 @@ async function getShiftForEmployee(emp, defaultShift) {
 // Mark employees absent when they have zero Attendance record for a working day
 // that has already ended. Skips holidays, the employee's scheduled off-days
 // (per their Shift's `days` list), approved leave, and pre-joining dates.
-export async function markMissingAttendanceAsAbsent(targetDate) {
+export async function markMissingAttendanceAsAbsent(targetDate, onlyUserId) {
   const date = targetDate || istDateString(-1);
   const weekday = WEEKDAY_NAMES[new Date(date + 'T00:00:00Z').getUTCDay()];
 
@@ -65,7 +65,7 @@ export async function markMissingAttendanceAsAbsent(targetDate) {
 
   const employees = (await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"))
     .map(r => JSON.parse(r.data))
-    .filter(e => e.user_id && !e.is_attendance_exempt)
+    .filter(e => e.user_id && !e.is_attendance_exempt && (!onlyUserId || e.user_id === onlyUserId))
     .filter(e => !e.date_of_joining || e.date_of_joining <= date);
 
   if (employees.length === 0) return { date, checked: 0, marked: 0 };
@@ -281,10 +281,13 @@ export async function closeUnfinishedSessions(targetDate) {
     // with no real check-out there is no proof of the day's hours, so it is
     // marked absent (regularisation can still restore it).
     const declaredWfhOd = isDeclaredWfhOd(d);
-    const finalStatus = declaredWfhOd ? 'absent' : statusResult.status;
+    // with an earlier session, the last check-in is the check-out; only a day never checked out of at all is absent
+    const noCheckout = declaredWfhOd && absentForNoCheckout(d.date, sessionData.sessions.length);
+    const finalStatus = noCheckout ? 'absent' : declaredWfhOd && !d.selfie_reason ? d.status : statusResult.status;
     const updated = {
       ...d, ...sessionData, ...statusResult, status: finalStatus,
-      ...(declaredWfhOd ? { auto_closed_no_checkout: true, late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 } : {}),
+      ...(declaredWfhOd ? { auto_closed_no_checkout: noCheckout } : {}),
+      ...(noCheckout ? { late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 } : {}),
       auto_closed_at: new Date().toISOString(),
       auto_closed_reason: 'Final session of the day was never checked out before the 2 AM cutoff — closed as a zero-duration session at the last recorded punch; status reflects hours actually worked in completed sessions.',
     };
@@ -360,10 +363,13 @@ export async function closeStaleOpenSessions() {
     // with no real check-out there is no proof of the day's hours, so it is
     // marked absent (regularisation can still restore it).
     const declaredWfhOd = isDeclaredWfhOd(d);
-    const finalStatus = declaredWfhOd ? 'absent' : statusResult.status;
+    // with an earlier session, the last check-in is the check-out; only a day never checked out of at all is absent
+    const noCheckout = declaredWfhOd && absentForNoCheckout(d.date, sessionData.sessions.length);
+    const finalStatus = noCheckout ? 'absent' : declaredWfhOd && !d.selfie_reason ? d.status : statusResult.status;
     const updated = {
       ...d, ...sessionData, ...statusResult, status: finalStatus,
-      ...(declaredWfhOd ? { auto_closed_no_checkout: true, late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 } : {}),
+      ...(declaredWfhOd ? { auto_closed_no_checkout: noCheckout } : {}),
+      ...(noCheckout ? { late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 } : {}),
       auto_closed_at: new Date().toISOString(),
       auto_closed_reason: 'Checked in but never checked out for a past day — the last recorded check-in was treated as the final check-out; status reflects hours actually worked in completed sessions.',
     };
@@ -929,6 +935,7 @@ export async function fixAutoClosedWfhOd(days = 90) {
     if (d.regularised || d.auto_closed_no_checkout) continue;
     if (!/^(Final session of the day was never checked out|Checked in but never checked out)/.test(d.auto_closed_reason || '')) continue;
     if (hasRealCheckout(d)) continue; // the check-out did arrive (e.g. late biometric sync) — a worked day
+    if (!absentForNoCheckout(d.date, buildSessions(d.raw_punches || []).sessions.length)) continue; // last check-in is the check-out
     const upd = { ...d, status: 'absent', auto_closed_no_checkout: true, late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 };
     await run("UPDATE entities SET status='absent', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), r.id]);
     fixed++;
@@ -943,7 +950,7 @@ export async function fixAutoClosedWfhOd(days = 90) {
   for (const r of reopened) {
     const d = JSON.parse(r.data);
     if (d.regularised || d.admin_marked || d.status === 'leave' || d.gate_pass_official || d.gate_pass_half_day || d.gate_pass_departure_checkout) continue;
-    if (hasRealCheckout(d)) {
+    if (hasRealCheckout(d) || !absentForNoCheckout(d.date, buildSessions(d.raw_punches || []).sessions.length)) {
       await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...d, auto_closed_no_checkout: false }), r.id]);
       continue;
     }
@@ -962,13 +969,14 @@ export async function fixAutoClosedWfhOd(days = 90) {
     const empCache = {};
     for (const r of flagged) {
       const d = JSON.parse(r.data);
-      if (d.regularised || d.admin_marked || !hasRealCheckout(d)) continue;
+      const lastInIsOut = !hasRealCheckout(d) && !absentForNoCheckout(d.date, buildSessions(d.raw_punches || []).sessions.length);
+      if (d.regularised || d.admin_marked || !(hasRealCheckout(d) || lastInIsOut)) continue;
       if (!(d.user_id in empCache)) {
         const empRow = await one("SELECT data FROM entities WHERE type='Employee' AND user_id=$1", [d.user_id]);
         empCache[d.user_id] = empRow ? JSON.parse(empRow.data) : {};
       }
       const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
-      const sd = buildSessions(d.raw_punches);
+      const sd = lastInIsOut ? closeTrailingOpenSession(d.raw_punches) : buildSessions(d.raw_punches);
       const halfDayHours = await getHalfDayOverrideHours(d.date, shift);
       const computed = computeStatusFromSessions(sd, shift, halfDayHours);
       const result = applyDeclaredStatus(d, isRuledOd(d) ? applyHalfDayLeaveStatus(d, sd, computed) : computed);

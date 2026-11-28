@@ -25,6 +25,7 @@ import CompOffAdminTab from '@/components/admin/CompOffAdminTab';
 import KioskManagementTab from '@/components/admin/KioskManagementTab';
 import HrEmailTab from '@/components/admin/HrEmailTab';
 import LeaveCancelTab from '@/components/admin/LeaveCancelTab';
+import RegularisationDeleteTab from '@/components/admin/RegularisationDeleteTab';
 import BulkMarkPresentTab from '@/components/admin/BulkMarkPresentTab';
 
 const TOKEN_KEY = 'base44_access_token';
@@ -2830,6 +2831,7 @@ export default function AdminPanel() {
     { id: 'confirmation', label: 'Probation & Confirmation', icon: CheckCircle2 },
     { id: 'compoff',    label: 'Comp-Off Requests',  icon: CalendarClock },
     { id: 'leavecancel', label: 'Leave Cancellation', icon: CalendarClock },
+    { id: 'reg_delete', label: 'Regularisation Deletion', icon: Trash2 },
     { id: 'bulkpresent', label: 'Bulk Mark Present', icon: CheckCircle2 },
     { id: 'kiosks',     label: 'Kiosk Management',   icon: Fingerprint },
     { id: 'att_import', label: 'Attendance Import',  icon: Download },
@@ -2883,6 +2885,7 @@ export default function AdminPanel() {
       {tab === 'confirmation' && <ProbationConfirmationTab />}
       {tab === 'compoff'    && <CompOffAdminTab />}
       {tab === 'leavecancel' && <LeaveCancelTab />}
+      {tab === 'reg_delete' && <RegularisationDeleteTab />}
       {tab === 'bulkpresent' && <BulkMarkPresentTab />}
       {tab === 'kiosks'     && <KioskManagementTab />}
       {tab === 'att_import' && <AttendanceImportTab />}

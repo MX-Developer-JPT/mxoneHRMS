@@ -9,6 +9,7 @@ import { sendEmail, emailTemplates } from '../utils/email.js';
 import { rosterFor, afterExit, isLeaver, lastWorkingDay, joinedFrom } from '../utils/leavers.js';
 import { PROTECTED_FIELDS } from '../utils/confirmationRules.js';
 import { isRuledOd } from '../utils/odRules.js';
+import { snapshotBefore } from '../utils/regularisationRestore.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
 import { resolveSigner, signatoryNode, signatoryHtml, parseSignatoryBlock } from '../utils/signatory.js';
 import { listSignatories } from '../utils/signatoryStore.js';
@@ -2763,6 +2764,11 @@ router.post('/:name', async (req, res) => {
   if (name.startsWith('cf_')) {
     const { handleConfirmation } = await import('./confirmation.js');
     return await handleConfirmation(name, p, cu, res);
+  }
+  // Admin tool: delete a regularisation request and undo its effect (routes/regularisationAdmin.js) — every rg_* function
+  if (name.startsWith('rg_')) {
+    const { handleRegularisationAdmin } = await import('./regularisationAdmin.js');
+    return await handleRegularisationAdmin(name, p, cu, res);
   }
   // Admin tool: transfer attendance from an old employee code to the new one (routes/attendanceTransfer.js) — every xf_* function
   if (name.startsWith('xf_')) {
@@ -11812,6 +11818,7 @@ router.post('/:name', async (req, res) => {
               ...att,
               ...sessionFields,
               original_punches: originalPunches(att, { check_in_time: finalCheckIn, check_out_time: finalCheckOut }),
+              pre_regularisation: snapshotBefore(att),
               ...(reg.requested_check_out ? { overtime_minutes: 0 } : {}),
               status: reg.requested_status || 'present',
               regularised: true,
@@ -11840,6 +11847,7 @@ router.post('/:name', async (req, res) => {
               status: reg.requested_status || 'present',
               regularised: true,
               regularisation_id,
+              created_by_regularisation: true,
               ...buildSessionFieldsFromTimes(finalCheckIn, finalCheckOut),
               check_in_time:  finalCheckIn,
               check_out_time: finalCheckOut,
@@ -11946,6 +11954,7 @@ router.post('/:name', async (req, res) => {
             ...att,
             ...sessionFields,
             original_punches: originalPunches(att, { check_in_time: finalCheckIn, check_out_time: finalCheckOut }),
+            pre_regularisation: snapshotBefore(att),
             status: reg.requested_status || 'present',
             regularised: true,
             regularisation_id: reg.id,
@@ -11964,6 +11973,7 @@ router.post('/:name', async (req, res) => {
             status: reg.requested_status || 'present',
             regularised: true,
             regularisation_id: reg.id,
+            created_by_regularisation: true,
             ...buildSessionFieldsFromTimes(finalCheckIn, finalCheckOut),
             check_in_time:  finalCheckIn,
             check_out_time: finalCheckOut,
