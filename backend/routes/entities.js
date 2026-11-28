@@ -15,6 +15,7 @@ import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
 import { loadRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
 import { decorateOvertime, clearOvertimeCache } from '../utils/overtimeData.js';
+import { changedProtected } from '../utils/confirmationRules.js';
 
 const router = Router();
 
@@ -840,7 +841,7 @@ async function assetValidation(data, current) {
   return { atype, problem: assetProblem(data, current, atype, others) };
 }
 
-const PRIVATE_TYPES = new Set(['AuthorisedSignatory', 'LetterDispatch', 'OfferLetterDispatch', 'OvertimePolicy', 'HrEmailAudit', 'SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot', 'CvReviewBatch', 'RecruitmentConfig', 'CandidateIntake', 'FieldTrip', 'FieldTripSnap', 'TrackingDevice', 'FieldDaySummary']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them; FieldTrip holds the GPS trail of field staff — written only by the field-duty functions (so nobody can edit or delete their own points or distance) and read only through getFieldRoute/getFieldLive/getFieldTripTrail, which enforce the reporting hierarchy
+const PRIVATE_TYPES = new Set(['ConfirmationCase', 'ProbationReview', 'ConfirmationReminderLog', 'AuthorisedSignatory', 'LetterDispatch', 'OfferLetterDispatch', 'OvertimePolicy', 'HrEmailAudit', 'SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot', 'CvReviewBatch', 'RecruitmentConfig', 'CandidateIntake', 'FieldTrip', 'FieldTripSnap', 'TrackingDevice', 'FieldDaySummary']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them; FieldTrip holds the GPS trail of field staff — written only by the field-duty functions (so nobody can edit or delete their own points or distance) and read only through getFieldRoute/getFieldLive/getFieldTripTrail, which enforce the reporting hierarchy
 router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
 
 // Exit cases are driven by the exit workflow functions (resignation, approvals, clearance, settlement). Writing the record directly
@@ -862,6 +863,22 @@ router.use('/Exit', async (req, res, next) => {
   const { exitPatchProblem } = await import('../utils/exitPolicy.js');
   const problem = exitPatchProblem(JSON.parse(row.data), req.body || {});
   if (problem) return res.status(403).json({ error: problem });
+  return next();
+});
+
+// Once an employee has a confirmation request, their confirmation status is decided by the reporting manager through the
+// workflow. Editing it directly (by anyone) is refused: an administrator corrects it from Confirmation Management.
+router.use('/Employee', async (req, res, next) => {
+  if (!['PUT', 'PATCH'].includes(req.method)) return next();
+  const parts = req.path.split('/').filter(Boolean);
+  if (parts.length !== 1) return next();
+  const row = await one("SELECT user_id, data FROM entities WHERE type='Employee' AND id=$1", [parts[0]]);
+  if (!row) return next();
+  const current = JSON.parse(row.data);
+  const changed = changedProtected(current, req.body);
+  if (!changed.length) return next();
+  const open = await one("SELECT id FROM entities WHERE type='ConfirmationCase' AND status<>'cancelled' AND data::jsonb->>'user_id'=$1 LIMIT 1", [current.user_id || row.user_id]);
+  if (open) return res.status(403).json({ error: 'The confirmation status of this employee is controlled by the confirmation workflow. An administrator can correct it in Confirmation Management.' });
   return next();
 });
 

@@ -29,10 +29,13 @@ export default function ProbationConfirmationTab() {
   useEffect(() => { load(); }, []);
 
   const act = async (emp, action) => {
-    if (action === 'revert' && !window.confirm(`Move ${emp.display_name} back to probation? They will stop earning EL and cannot apply for it.`)) return;
+    const reason = window.prompt(action === 'revert'
+      ? `Administrative correction: move ${emp.display_name} back to probation? They will stop earning EL. Give the reason:`
+      : `Administrative correction: confirm ${emp.display_name} without the manager workflow? Give the reason:`);
+    if (reason === null) return;
     setBusy(emp.user_id);
     try {
-      const res = await base44.functions.invoke('confirmEmployee', { user_id: emp.user_id, action, confirmation_date: dates[emp.user_id] || todayIST() });
+      const res = await base44.functions.invoke('confirmEmployee', { user_id: emp.user_id, action, reason, confirmation_date: dates[emp.user_id] || todayIST() });
       const d = res?.data || res;
       if (!d?.success) throw new Error(d?.error || 'Could not update');
       toast.success(action === 'revert' ? `${emp.display_name} is back on probation` : `${emp.display_name} is confirmed — EL starts from ${d.confirmation_date}`);
@@ -55,7 +58,7 @@ export default function ProbationConfirmationTab() {
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-semibold">Probation &amp; Confirmation</h2>
-        <p className="text-sm text-muted-foreground">Confirm an employee after probation. From the confirmation date they earn Earned Leave (1 day per 20 working days) and can apply for EL.</p>
+        <p className="text-sm text-muted-foreground">Confirmations are normally decided by the reporting manager in Confirmation Management. This tab is an administrator’s correction tool: it needs a reason and does not email the employee. From the confirmation date they earn Earned Leave and can apply for it.</p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {[['probation', 'On probation'], ['confirmation', 'Confirmed']].map(([k, label]) => (

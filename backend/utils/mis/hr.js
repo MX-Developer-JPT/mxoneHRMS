@@ -42,6 +42,11 @@ export async function loadHrExtras() {
   const loanPaid = {};
   for (const p of pay) { const v = num(p.loan); if (v > 0 && p.y && p.m) (loanPaid[p.user_id] ||= []).push({ ym: `${p.y}-${String(p.m).padStart(2, '0')}`, amount: v }); }
   const payMonths = [...new Set(pay.map(p => `${p.y}-${String(p.m).padStart(2, '0')}`))].sort();
+  // confirmation workflow cases, read the same way as the earlier probation reviews
+  for (const c of await t('ConfirmationCase')) {
+    if (c.status === 'cancelled') continue;
+    probation.push({ ...c, extended_until: c.status === 'on_hold' ? c.decision?.review_date || '' : '', action: c.status === 'on_hold' ? 'extended' : '', final_action: c.status === 'confirmed' ? 'confirmed' : '', letter_sent: (c.mails || []).some((m) => m.kind === 'confirmed' && m.status === 'sent') });
+  }
   return { docs, probation, loans, bonuses, tickets, invites, perf, pips, enroll, bank, loanPaid, payMonths };
 }
 
