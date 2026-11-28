@@ -1,3 +1,4 @@
+import { withName } from '../utils/actorName.js';
 import { Router } from 'express';
 import { assetProblem, cleanSpecs } from '../utils/assetSpecs.js';
 import { ensureManagerRole } from '../utils/managerRole.js';
@@ -999,7 +1000,7 @@ async function candidatesOn(reqId) {
 
 /* ── CREATE  POST /api/entities/:type ─────────────────── */
 router.post('/:type', async (req, res) => {
-  const cu = getCurrentUser(req);
+  const cu = await withName(getCurrentUser(req));
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type } = req.params;
   if (!(await requireAdminForType(cu, res, type))) return;
@@ -1273,7 +1274,7 @@ router.post('/:type', async (req, res) => {
 
 /* ── UPDATE  PATCH /api/entities/:type/:id ─────────────── */
 router.patch('/:type/:id', async (req, res) => {
-  const cu = getCurrentUser(req);
+  const cu = await withName(getCurrentUser(req));
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const { type, id } = req.params;
   if (!(await requireAdminForType(cu, res, type))) return;

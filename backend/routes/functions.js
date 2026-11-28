@@ -11,6 +11,7 @@ import { PROTECTED_FIELDS } from '../utils/confirmationRules.js';
 import { isRuledOd } from '../utils/odRules.js';
 import { scaleContent, renderOnOnePage, fitScale } from '../utils/pdfFit.js';
 import { snapshotBefore } from '../utils/regularisationRestore.js';
+import { withName } from '../utils/actorName.js';
 import { withEvent, visitTimeline, exitTime, istText, EVENT_LABELS } from '../utils/visitorRecord.js';
 import { flagLeftWithoutGatePass, leftWithoutGatePass, buildLeftWorkbook } from '../utils/leftWithoutGatePass.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
@@ -2708,6 +2709,8 @@ router.post('/:name', async (req, res) => {
   }
 
   try {
+  // the token has no name: read it once, so every "who did this" record carries it
+  cu = await withName(cu);
   // Learning & Development module (routes/ld.js) — every ld_* function
   if (name.startsWith('ld_')) {
     const { handleLd } = await import('./ld.js');
