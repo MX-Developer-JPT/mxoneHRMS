@@ -26,6 +26,7 @@ import KioskManagementTab from '@/components/admin/KioskManagementTab';
 import HrEmailTab from '@/components/admin/HrEmailTab';
 import LeaveCancelTab from '@/components/admin/LeaveCancelTab';
 import RegularisationDeleteTab from '@/components/admin/RegularisationDeleteTab';
+import LeftGatePassMailTab from '@/components/admin/LeftGatePassMailTab';
 import BulkMarkPresentTab from '@/components/admin/BulkMarkPresentTab';
 
 const TOKEN_KEY = 'base44_access_token';
@@ -2843,6 +2844,7 @@ export default function AdminPanel() {
     { id: 'walkthrough',label: 'App Walkthrough',    icon: Compass },
     { id: 'email',      label: 'Email Settings',     icon: Mail },
     { id: 'hr_emails',  label: 'HR Email Addresses', icon: Mail },
+    { id: 'gp_mail',    label: 'Gate Pass Email', icon: Mail },
     { id: 'ai',         label: 'AI Settings',        icon: Bot },
     { id: 'api',        label: 'API Integration',    icon: Fingerprint },
     { id: 'audit',      label: 'Audit Log',          icon: ScrollText },
@@ -2886,6 +2888,7 @@ export default function AdminPanel() {
       {tab === 'compoff'    && <CompOffAdminTab />}
       {tab === 'leavecancel' && <LeaveCancelTab />}
       {tab === 'reg_delete' && <RegularisationDeleteTab />}
+      {tab === 'gp_mail' && <LeftGatePassMailTab />}
       {tab === 'bulkpresent' && <BulkMarkPresentTab />}
       {tab === 'kiosks'     && <KioskManagementTab />}
       {tab === 'att_import' && <AttendanceImportTab />}

@@ -8,7 +8,8 @@
 //    SEPARATE copy with the private links removed.
 
 export const CONFIG_KEY = 'HR_EMAIL_CONFIG';
-export const NEVER_COPY = ['otp', 'test'];
+// 'left-without-gatepass' goes only to the recipients configured for it in the Admin Panel
+export const NEVER_COPY = ['otp', 'test', 'left-without-gatepass'];
 // Mail types an administrator may switch the HR copy off for (all are copied unless switched off).
 export const OPTIONAL_TYPES = [
   { key: 'payslip', label: 'Payslips' },

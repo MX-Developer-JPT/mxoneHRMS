@@ -11,6 +11,7 @@ import { PROTECTED_FIELDS } from '../utils/confirmationRules.js';
 import { isRuledOd } from '../utils/odRules.js';
 import { scaleContent, renderOnOnePage, fitScale } from '../utils/pdfFit.js';
 import { snapshotBefore } from '../utils/regularisationRestore.js';
+import { flagLeftWithoutGatePass, leftWithoutGatePass, buildLeftWorkbook } from '../utils/leftWithoutGatePass.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
 import { resolveSigner, signatoryNode, signatoryHtml, parseSignatoryBlock } from '../utils/signatory.js';
 import { listSignatories } from '../utils/signatoryStore.js';
@@ -78,37 +79,6 @@ function getPdfPrinter() {
       bolditalics: join(fontsDir, 'Roboto-MediumItalic.ttf'),
     },
   });
-}
-
-// "Left without a gate pass": a day that ended SHORT (short attendance / half day because the working hours were not
-// completed) with the last check-out at least LEFT_EARLY_MIN minutes before the shift's end and no gate pass for that day.
-// Computed from each record's own check-out and the employee's shift, so it covers every past day too (nothing has to be
-// back-filled in the stored records). Leave-driven half days, regularised days (HR corrected them) and anyone who had a gate
-// pass are never flagged; leaving 40 minutes early (still a full day) is below the threshold. Sets left_without_gate_pass,
-// left_early_minutes and shift_end_time on the flagged records (in place).
-const LEFT_EARLY_MIN = 60;
-async function flagLeftWithoutGatePass(records) {
-  const dates = records.map(r => r.date).filter(Boolean).sort();
-  if (!dates.length) return records;
-  const gpDays = new Set();
-  for (const r of await all("SELECT data FROM entities WHERE type='GatePass' AND data::jsonb->>'request_date' >= $1 AND data::jsonb->>'request_date' <= $2", [dates[0], dates[dates.length - 1]])) {
-    const g = JSON.parse(r.data);
-    if (g.employee_user_id && ['approved', 'departed', 'returned', 'auto_closed', 'completed'].includes(g.status)) gpDays.add(`${g.employee_user_id}__${g.request_date}`);
-  }
-  const shifts = {}; let dflt = { start_time: '09:00', end_time: '18:00' };
-  for (const r of await all("SELECT data FROM entities WHERE type='Shift'")) { const sh = JSON.parse(r.data); shifts[sh.id] = sh; if (sh.is_default) dflt = sh; }
-  const empShift = {}; for (const r of await all("SELECT user_id, data FROM entities WHERE type='Employee'")) { try { empShift[r.user_id] = JSON.parse(r.data).shift_id; } catch { /* skip */ } }
-  for (const rec of records) {
-    if (!['half_day', 'short_attendance'].includes(rec.status)) continue;
-    if (rec.leave_id || rec.regularised || rec.is_in_progress || !rec.check_out_time || !rec.date) continue;
-    if (gpDays.has(`${rec.user_id}__${rec.date}`)) continue;
-    const shift = (empShift[rec.user_id] && shifts[empShift[rec.user_id]]) || dflt;
-    const out = Date.parse(String(rec.check_out_time).endsWith('Z') ? rec.check_out_time : rec.check_out_time + 'Z');
-    if (Number.isNaN(out)) continue;
-    const early = Math.round((shiftEndDateTime(rec.date, shift).getTime() - out) / 60000);
-    if (early >= LEFT_EARLY_MIN) { rec.left_without_gate_pass = true; rec.left_early_minutes = early; rec.shift_end_time = shift.end_time || '18:00'; rec.shift_start_time = shift.start_time || '09:00'; }
-  }
-  return records;
 }
 
 // Employee confirmation lives in routes/confirmation.js (cf_*). These two helpers are shared with it.
@@ -2777,6 +2747,11 @@ router.post('/:name', async (req, res) => {
   if (name.startsWith('cf_')) {
     const { handleConfirmation } = await import('./confirmation.js');
     return await handleConfirmation(name, p, cu, res);
+  }
+  // Daily "left without gate pass" email: recipients and manual send (routes/leftGatePassMail.js) — every lw_* function
+  if (name.startsWith('lw_')) {
+    const { handleLeftGatePassMail } = await import('./leftGatePassMail.js');
+    return await handleLeftGatePassMail(name, p, cu, res);
   }
   // Admin tool: delete a regularisation request and undo its effect (routes/regularisationAdmin.js) — every rg_* function
   if (name.startsWith('rg_')) {
@@ -6796,41 +6771,9 @@ router.post('/:name', async (req, res) => {
       const from = String(p.from || p.date || ''), to = String(p.to || p.date || p.from || '');
       if (!ymdRe.test(from) || !ymdRe.test(to) || to < from) return res.json({ success: false, error: 'Choose a valid date range' });
       if ((new Date(to) - new Date(from)) / 86400000 > 92) return res.json({ success: false, error: 'Please export at most 3 months at a time' });
-      const emps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
-      const byUser = Object.fromEntries(emps.map(e => [e.user_id, e]));
-      let recs = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [from, to])).filter(r => r.user_id && byUser[r.user_id]);
-      if (lwTeam) recs = recs.filter(r => lwTeam.has(r.user_id));
-      // one row per employee per day, keeping the record that has the most real data
-      const bestOf = {};
-      for (const r of recs) { const k = `${r.user_id}__${r.date}`; const sc = (x) => (x.check_out_time ? 4 : 0) + (x.check_in_time ? 2 : 0) + (x.regularised ? 1 : 0); if (!bestOf[k] || sc(r) > sc(bestOf[k])) bestOf[k] = r; }
-      const flagged = (await flagLeftWithoutGatePass(Object.values(bestOf))).filter(r => r.left_without_gate_pass)
-        .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(byUser[a.user_id].display_name || '').localeCompare(String(byUser[b.user_id].display_name || '')));
-      const clock = (iso) => { if (!iso) return ''; const d = new Date(String(iso).endsWith('Z') ? iso : iso + 'Z'); return isNaN(d) ? '' : d.toLocaleTimeString('en-IN', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: true }); };
-      const hm = (t) => { const [h, m] = String(t || '18:00').split(':').map(Number); return `${String(h % 12 || 12).padStart(2, '0')}:${String(m || 0).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`; };
-      const earlyTxt = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ' ' + (m % 60) + 'm' : ''}` : `${m}m`);
-      const ExcelJSG = (await import('exceljs')).default;
-      const wbG = new ExcelJSG.Workbook(); const wsG = wbG.addWorksheet('Left without gate pass');
-      const colsG = [['S.No', 6], ['Emp Code', 12], ['Employee', 24], ['Department', 18], ['Designation', 20], ['Reporting manager', 22], ['Date', 12], ['Status', 16], ['Shift start', 11], ['Shift end', 11], ['First check-in', 12], ['Last check-out', 12], ['Left before shift end', 14], ['Working hours', 10]];
-      wsG.addRow([`Maxvolt Energy — Left without gate pass, ${from}${to !== from ? ' to ' + to : ''}`]); wsG.mergeCells(1, 1, 1, colsG.length);
-      Object.assign(wsG.getCell(1, 1), { font: { bold: true, size: 14, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF991B1B' } } });
-      wsG.addRow([`${flagged.length} case(s) · short attendance / half day, checked out ${LEFT_EARLY_MIN}+ minutes before shift end, no gate pass · generated by ${cu.email || 'HR'}`]); wsG.addRow([]);
-      wsG.addRow(colsG.map(c => c[0])).eachCell(c => Object.assign(c, { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF7F1D1D' } }, alignment: { horizontal: 'center', vertical: 'middle', wrapText: true } }));
-      colsG.forEach((c, i) => { wsG.getColumn(i + 1).width = c[1]; });
-      let nG = 0;
-      for (const r of flagged) {
-        const e = byUser[r.user_id]; const mgr = byUser[e.reporting_manager_id];
-        const row = wsG.addRow([++nG, e.employee_code || '', e.display_name || '', e.department || '', e.designation || '', mgr?.display_name || '', r.date, String(r.status).replace(/_/g, ' '), hm(r.shift_start_time), hm(r.shift_end_time), clock(r.check_in_time), clock(r.check_out_time), earlyTxt(r.left_early_minutes), r.working_hours != null ? Number(Number(r.working_hours).toFixed(2)) : '']);
-        row.getCell(13).font = { bold: true, color: { argb: 'FFB91C1C' } }; row.alignment = { vertical: 'middle' };
-      }
-      // per-employee totals on a second sheet
-      const wsT = wbG.addWorksheet('By employee');
-      wsT.addRow(['Emp Code', 'Employee', 'Department', 'Times left without gate pass']).eachCell(c => Object.assign(c, { font: { bold: true } }));
-      const tally = {}; for (const r of flagged) tally[r.user_id] = (tally[r.user_id] || 0) + 1;
-      Object.entries(tally).sort((a, b) => b[1] - a[1]).forEach(([uid, n]) => wsT.addRow([byUser[uid].employee_code || '', byUser[uid].display_name || '', byUser[uid].department || '', n]));
-      [12, 26, 20, 16].forEach((w, i) => { wsT.getColumn(i + 1).width = w; });
-      wsG.views = [{ state: 'frozen', ySplit: 4, xSplit: 3 }]; wsG.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: colsG.length } };
-      const bufG = await wbG.xlsx.writeBuffer();
-      return res.json({ success: true, base64: Buffer.from(bufG).toString('base64'), filename: `Left_Without_Gate_Pass_${from}${to !== from ? '_to_' + to : ''}.xlsx`, records: flagged.length });
+      const { flagged, byUser } = await leftWithoutGatePass(from, to, lwTeam);
+      const out = await buildLeftWorkbook({ flagged, byUser, from, to, generatedBy: cu.email || 'HR' }, (await import('exceljs')).default);
+      return res.json({ success: true, base64: Buffer.from(out.buffer).toString('base64'), filename: out.filename, records: flagged.length });
     }
 
     // Admin Panel -> Bulk Mark Present. For one date, marks everyone who HAS an attendance record that day as a full-day present.

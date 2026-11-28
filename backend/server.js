@@ -565,6 +565,13 @@ cron.schedule('0 9 * * *', async () => {
   try { const { runExitLifecycle } = await import('./cron/exitLifecycle.js'); await runExitLifecycle(); } catch (err) { console.error('[exit-lifecycle] failed:', err); }
 }, { timezone: 'Asia/Kolkata' });
 
+// ── Left-without-gate-pass email — 9:00 AM IST, for the previous day. Later ticks until noon only retry a day that has
+// not gone out (server restarting at 9, mail provider down); a day is never sent twice.
+cron.schedule('*/10 9-11 * * *', async () => {
+  try { const { sendLeftGatePassMail } = await import('./cron/leftGatePassMail.js'); const r = await sendLeftGatePassMail(); if (r.sent) console.log(`[left-gate-pass-mail] ${r.date}: ${r.cases} case(s) to ${r.sent} recipient(s)`); }
+  catch (err) { console.error('[left-gate-pass-mail] failed:', err.message); }
+}, { timezone: 'Asia/Kolkata' });
+
 // ── Confirmation-due email reminders — daily at 8:30 AM IST ──
 // Emails the reporting manager once an employee's probation end date is
 // within 30 days (or already overdue) — once per employee per probation
