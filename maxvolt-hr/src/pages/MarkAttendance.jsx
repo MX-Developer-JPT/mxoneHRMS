@@ -353,7 +353,7 @@ export default function MarkAttendance() {
       user_id: user.id,
       date: today,
       check_in_time: checkInTime.toISOString(),
-      status: selfieReason === 'wfh' ? 'work_from_home' : selfieReason === 'od' ? 'on_duty' : 'present',
+      status: selfieReason === 'wfh' ? 'work_from_home' : selfieReason === 'od' ? 'in_progress' : 'present',
       selfie_reason: selfieReason,
       shift_id: shift?.id
     });

@@ -15,6 +15,7 @@
 // rule buildSessions applies) and count as applied.
 import { v4 as uuidv4 } from 'uuid';
 import { canContinuePreviousDay } from './attendanceRules.js';
+import { isRuledOd } from './odRules.js';
 import { all, one, run } from '../db.js';
 import { buildSessions, closeTrailingOpenSession, computeStatusFromSessions, applyDeclaredStatus, applyHalfDayLeaveStatus, getHalfDayOverrideHours, getShift, EARLY_MORNING_CUTOFF_HOUR } from '../routes/attendancelog.js';
 
@@ -36,7 +37,7 @@ function recordedTimes(d) {
 const hasPunch = (d, t) => !!d && recordedTimes(d).some(x => Math.abs(x - t) < DUP_MS);
 
 const isFrozen = (d) => !!(d.regularised || d.admin_marked || d.status === 'leave' || (d.leave_id && !d.leave_half_day) || d.gate_pass_half_day);
-const isHrSetStatus = (d) => /^imported from muster/i.test(String(d.notes || '')) || ['holiday', 'week_off', 'weekly_off', 'on_duty', 'work_from_home', 'on_leave'].includes(d.status);
+const isHrSetStatus = (d) => /^imported from muster/i.test(String(d.notes || '')) || (!isRuledOd(d) && ['holiday', 'week_off', 'weekly_off', 'on_duty', 'work_from_home', 'on_leave'].includes(d.status));
 
 /**
  * @param {{from?:string,to?:string,codes?:string[],apply?:boolean}} opts   dates are yyyy-MM-dd (IST); codes limits to those biometric codes

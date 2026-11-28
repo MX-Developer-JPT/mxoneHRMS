@@ -8,6 +8,7 @@ import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { rosterFor, afterExit, isLeaver, lastWorkingDay, joinedFrom } from '../utils/leavers.js';
 import { PROTECTED_FIELDS } from '../utils/confirmationRules.js';
+import { isRuledOd } from '../utils/odRules.js';
 import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
 import { resolveSigner, signatoryNode, signatoryHtml, parseSignatoryBlock } from '../utils/signatory.js';
 import { listSignatories } from '../utils/signatoryStore.js';
@@ -5208,7 +5209,10 @@ router.post('/:name', async (req, res) => {
       const saHalfDayHours = await getHalfDayOverrideHours(saAttDate, saShift);
       let saStatusResult = applyHalfDayLeaveStatus(saAtt, saSessionData, computeStatusFromSessions(saSessionData, saShift, saHalfDayHours));
       // a day that began with a half-day gate pass stays a half day even if the employee later punches again
-      if (saAtt?.gate_pass_half_day) saStatusResult = applyDeclaredStatus(saAtt, saStatusResult);
+      if (saAtt?.gate_pass_half_day && saReason !== 'od') saStatusResult = applyDeclaredStatus(saAtt, saStatusResult);
+      // On Duty follows the biometric rules: in progress until check-out, then judged on the hours worked
+      const saOd = isRuledOd({ selfie_reason: saReason, date: saAttDate });
+      if (saOd) saStatusResult = applyDeclaredStatus({ ...(saAtt || {}), selfie_reason: 'od', date: saAttDate }, saStatusResult);
       // WFH/OD are proper attendance statuses (filterable/reportable), not a
       // note bolted onto 'present' — override whatever the normal
       // present/late/half-day engine computed. Only applies while the
@@ -5217,7 +5221,7 @@ router.post('/:name', async (req, res) => {
       // computed status is left alone for any later session that starts
       // with no reason carried over (shouldn't happen — 'in' always
       // requires one — but keeps this override scoped to reason-bearing days).
-      const saFinalStatus = saReason === 'wfh' ? 'work_from_home' : saReason === 'od' ? 'on_duty' : saStatusResult.status;
+      const saFinalStatus = saOd ? saStatusResult.status : saReason === 'wfh' ? 'work_from_home' : saReason === 'od' ? 'on_duty' : saStatusResult.status;
 
       const saId = saAtt?.id || uuidv4();
       const saAttData = {
@@ -5225,6 +5229,8 @@ router.post('/:name', async (req, res) => {
         ...saSessionData,
         check_out_time: saSessionData.is_in_progress ? null : saSessionData.check_out_time,
         ...saStatusResult, status: saFinalStatus, selfie_reason: saReason, shift_id: saEmp.shift_id || null,
+        // a new check-in (or the check-out) supersedes an earlier "never checked out" closure of this day
+        ...(saOd ? { auto_closed_no_checkout: false } : {}),
         ...(saEvent === 'in'
           ? { check_in_selfie_url: saSelfieUrl || '', check_in_location: saLocation || null, check_in_source: 'selfie', ...(saNotes ? { notes: saNotes.slice(0, 200) } : {}) }
           : { check_out_selfie_url: saSelfieUrl || '', check_out_location: saLocation || null, check_out_source: 'selfie', ...(saNotes ? { checkout_notes: saNotes.slice(0, 200) } : {}) }),
@@ -10754,7 +10760,7 @@ router.post('/:name', async (req, res) => {
         }
         const halfDayHours = await getHalfDayOverrideHours(d.date, shift);
         const statusResult = computeStatusFromSessions(sd, shift, halfDayHours);
-        const finalStatus = d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
+        const finalStatus = isRuledOd(d) ? applyDeclaredStatus(d, statusResult).status : d.selfie_reason === 'wfh' ? 'work_from_home' : d.selfie_reason === 'od' ? 'on_duty' : statusResult.status;
         const updated = { ...d, ...sd, ...statusResult, status: finalStatus, repaired_at: new Date().toISOString(), repaired_from: source };
         await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [finalStatus, JSON.stringify(updated), row.id]);
         if (source === 'field_trip') repairedFromFieldTrip++; else repairedFromFileTimestamp++;
@@ -10832,11 +10838,13 @@ router.post('/:name', async (req, res) => {
           reason = rsTripSet.has(`${d.user_id}|${d.date}`) ? 'od' : 'wfh';
           inferred = true;
         }
+        // an On Duty day judged late / half day / short attendance is already correct; only a plain "present" is relabelled
+        if (isRuledOd({ selfie_reason: reason, date: d.date }) && !['present', 'on_duty'].includes(d.status)) { rsAlready++; continue; }
         const target = reason === 'wfh' ? 'work_from_home' : 'on_duty';
         if (d.status === target && d.selfie_reason === reason) { rsAlready++; continue; }
         if (rsSample.length < 10) rsSample.push({ date: d.date, employee_code: d.employee_code || '', old_status: d.status, new_status: target, inferred });
         if (!rsDry) {
-          const upd = { ...d, ...applyDeclaredStatus({ selfie_reason: reason }, { status: d.status, late_minutes: d.late_minutes, early_departure_minutes: d.early_departure_minutes }), selfie_reason: reason, ...(inferred ? { selfie_reason_inferred: true } : {}) };
+          const upd = { ...d, ...applyDeclaredStatus({ selfie_reason: reason, date: d.date }, { status: d.status, late_minutes: d.late_minutes, early_departure_minutes: d.early_departure_minutes }), selfie_reason: reason, ...(inferred ? { selfie_reason_inferred: true } : {}) };
           await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [target, JSON.stringify(upd), row.id]);
         }
         rsUpdated++; if (inferred) rsInferred++;

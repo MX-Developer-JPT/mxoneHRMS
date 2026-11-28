@@ -1,6 +1,7 @@
 // Nightly attendance automation — runs unattended (see server.js for the schedule).
 // 1. Employees with no Attendance row at all on a completed working day → marked absent.
 // 2. Employees who checked in but never checked out before 2 AM the next day → marked absent.
+import { isRuledOd, OD_RULES_FROM } from '../utils/odRules.js';
 import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { buildSessions, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, isOvernightShift, shiftEndDateTime } from '../routes/attendancelog.js';
@@ -778,7 +779,7 @@ export async function fixHalfDayLeaveDays(days = 45) {
   let fixed = 0;
   for (const r of rows) {
     const d = JSON.parse(r.data);
-    if (!d.leave_id || d.selfie_reason === 'wfh' || d.selfie_reason === 'od') continue;
+    if (!d.leave_id || d.selfie_reason === 'wfh' || (d.selfie_reason === 'od' && !isRuledOd(d)) || d.auto_closed_no_checkout) continue;
     const mins = d.total_working_minutes || Math.round((d.working_hours || 0) * 60);
     if (mins <= 120) continue;
     const upd = { ...d, status: 'present', late_minutes: 0, late_arrival: false, late_arrival_minutes: 0, early_departure_minutes: 0, early_departure: false };
@@ -933,6 +934,23 @@ export async function fixAutoClosedWfhOd(days = 90) {
     fixed++;
   }
 
+  // On Duty: a day closed for want of a check-out stays absent for the whole day, even if a later recalculation (another
+  // punch arriving, a re-sync) gave it a worked status while it still has no check-out.
+  const reopened = await all(
+    "SELECT id, data FROM entities WHERE type='Attendance' AND status <> 'absent' AND data::jsonb->>'selfie_reason'='od' AND data::jsonb->>'auto_closed_no_checkout'='true' AND data::jsonb->>'date' >= $1",
+    [from > OD_RULES_FROM ? from : OD_RULES_FROM]
+  );
+  for (const r of reopened) {
+    const d = JSON.parse(r.data);
+    if (d.regularised || d.admin_marked || d.status === 'leave' || d.gate_pass_official || d.gate_pass_half_day || d.gate_pass_departure_checkout) continue;
+    if (hasRealCheckout(d)) {
+      await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...d, auto_closed_no_checkout: false }), r.id]);
+      continue;
+    }
+    await run("UPDATE entities SET status='absent', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...d, status: 'absent', late_minutes: 0, late_arrival: false, late_arrival_minutes: 0 }), r.id]);
+    fixed++;
+  }
+
   // 2) Undo it where a real check-out turned out to exist: re-derive the status
   //    from the day's actual punches (worked hours decide Present / Half Day).
   const flagged = await all(
@@ -952,7 +970,8 @@ export async function fixAutoClosedWfhOd(days = 90) {
       const shift = await getShiftForEmployee(empCache[d.user_id], defaultShift);
       const sd = buildSessions(d.raw_punches);
       const halfDayHours = await getHalfDayOverrideHours(d.date, shift);
-      const result = applyDeclaredStatus(d, computeStatusFromSessions(sd, shift, halfDayHours));
+      const computed = computeStatusFromSessions(sd, shift, halfDayHours);
+      const result = applyDeclaredStatus(d, isRuledOd(d) ? applyHalfDayLeaveStatus(d, sd, computed) : computed);
       const upd = { ...d, ...sd, ...result, auto_closed_no_checkout: false };
       await run("UPDATE entities SET status=$1, data=$2, updated_at=NOW()::TEXT WHERE id=$3", [result.status, JSON.stringify(upd), r.id]);
       restored++;

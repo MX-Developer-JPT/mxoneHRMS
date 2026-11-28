@@ -16,6 +16,7 @@
  * If employee is found (by employee_code or biometric_id), Attendance record is also updated.
  */
 
+import { isRuledOd } from '../utils/odRules.js';
 import express from 'express';
 import { one, all, run } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -557,7 +558,7 @@ export async function applyGatePassOuting(pass, stage) {
       return { action: 'created_present', id };
     }
     const data = JSON.parse(row.data);
-    if (data.regularised || data.admin_marked || data.status === 'leave' || (data.leave_id && !data.leave_half_day) || ['work_from_home', 'on_duty'].includes(data.status)) return { action: 'skipped_frozen' };
+    if (data.regularised || data.admin_marked || data.status === 'leave' || (data.leave_id && !data.leave_half_day) || (['work_from_home', 'on_duty'].includes(data.status) && !isRuledOd(data))) return { action: 'skipped_frozen' };
     const upd = { ...data, ...flags, status: 'present', early_departure: false, early_departure_minutes: 0 };
     await run("UPDATE entities SET status='present', data=$1, updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify(upd), row.id]);
     return { action: 'marked_present', id: row.id };
@@ -1068,6 +1069,11 @@ export function punchesOnlyAdded(existing, merged, requireAfterLast = true) {
 // auto-close. Returns `result` (a computeStatusFromSessions result)
 // untouched for any other day. WFH/OD never count as late / early departure.
 export function applyDeclaredStatus(existing, result) {
+  // On Duty days are judged like biometric days (including the gate pass rules); a full present day is labelled On Duty.
+  if (isRuledOd(existing)) {
+    const judged = applyDeclaredStatus({ ...existing, selfie_reason: null }, result);
+    return judged.status === 'present' ? { ...judged, status: 'on_duty' } : judged;
+  }
   const r = existing?.selfie_reason;
   // A HALF-DAY GATE PASS (outing type "Half Day", marked out by the gate admin) makes the day a half-day present
   // even though the employee never checks out: applyGatePassHalfDay() records the departure as the check-out and
