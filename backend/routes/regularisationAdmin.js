@@ -2,7 +2,6 @@
 // status. If the request had changed the day's attendance, the day is put back to what it is without it: the copy saved at
 // approval when there is one, otherwise rebuilt from the punches actually recorded. A day edited by an admin or covered by
 // leave keeps its attendance; another approved request for the same day is applied again.
-import { v4 as uuidv4 } from 'uuid';
 import { one, all, run } from '../db.js';
 import { regularisedTimes } from '../utils/attendanceRules.js';
 import { dayWithoutRegularisation, applyRequest, APPLIED_STATUSES, ownsDay, summary } from '../utils/regularisationRestore.js';
@@ -65,7 +64,7 @@ async function load(id) {
 
 export async function handleRegularisationAdmin(name, p, cu, res) {
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
-  const u = await one('SELECT role, custom_role, full_name, email FROM users WHERE id=$1', [cu.id]) || {};
+  const u = await one('SELECT role, custom_role FROM users WHERE id=$1', [cu.id]) || {};
   if (![u.role, u.custom_role].includes('admin')) return fail(res, 'Admin access required', 403);
 
   if (name === 'rg_list') {
@@ -88,8 +87,7 @@ export async function handleRegularisationAdmin(name, p, cu, res) {
   }
 
   if (name === 'rg_delete') {
-    const reason = String(p.reason || '').trim().slice(0, 300);
-    if (reason.length < 3) return fail(res, 'Give a reason for deleting this request.');
+    // by instruction this leaves no trail: no audit entry is written and nobody is notified
     const done = await plan(reg);
     // the request goes first, so a repeated click finds nothing to do
     const removed = await run("DELETE FROM entities WHERE type='AttendanceRegularisation' AND id=$1", [reg.id]);
@@ -103,14 +101,6 @@ export async function handleRegularisationAdmin(name, p, cu, res) {
     }
     const final = done.row || done.action === 'removed' ? await one("SELECT data FROM entities WHERE type='Attendance' AND user_id=$1 AND data::jsonb->>'date'=$2", [reg.user_id, done.date]) : null;
     const after = final ? summary(parse(final.data)) : null;
-    const id = uuidv4(), at = new Date().toISOString();
-    await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'AuditLog',$2,'active',$3)", [id, cu.id, JSON.stringify({ id, entity_type: 'AttendanceRegularisation', entity_id: reg.id, change_type: 'deleted', actor_name: u.full_name || u.email || '', employee_user_id: reg.user_id, attendance_date: done.date, request_status: reg.status, reason, attendance_action: done.action, attendance_before: done.before, attendance_after: after, timestamp: at })]);
-    try {
-      const title = 'Regularisation request deleted', message = `Your regularisation request for ${done.date} was deleted by an administrator. Reason: ${reason}`;
-      await run('INSERT INTO notifications(id,user_id,title,message,type,link) VALUES($1,$2,$3,$4,$5,$6)', [uuidv4(), reg.user_id, title, message, 'warning', '/AttendanceRegularisation']);
-      const { sendPushToUser } = await import('../utils/push.js');
-      sendPushToUser(reg.user_id, { title, message, type: 'warning', link: '/AttendanceRegularisation' });
-    } catch (e) { console.warn('[regularisation delete] notify failed:', e.message); }
     return res.json({ success: true, date: done.date, action: done.action, before: done.before, after });
   }
   return res.status(400).json({ error: `Unknown function ${name}` });

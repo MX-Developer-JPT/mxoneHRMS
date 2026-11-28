@@ -24,7 +24,6 @@ export default function RegularisationDeleteTab() {
   const [month, setMonth] = useState('');
   const [target, setTarget] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -34,14 +33,14 @@ export default function RegularisationDeleteTab() {
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [load]);
 
   const open = async (r) => {
-    setTarget(r); setReason(''); setPreview(null);
+    setTarget(r); setPreview(null);
     try { setPreview(await call('rg_preview', { regularisation_id: r.id })); }
     catch (e) { toast.error(e.message); setTarget(null); load(); }
   };
 
   const remove = async () => {
     setBusy(true);
-    try { await call('rg_delete', { regularisation_id: target.id, reason: reason.trim() }); toast.success('Regularisation request deleted'); setTarget(null); load(); }
+    try { await call('rg_delete', { regularisation_id: target.id }); toast.success('Regularisation request deleted'); setTarget(null); load(); }
     catch (e) { toast.error(e.message); }
     setBusy(false);
   };
@@ -50,7 +49,7 @@ export default function RegularisationDeleteTab() {
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-semibold">Regularisation Deletion</h2>
-        <p className="text-sm text-muted-foreground">Cancel and permanently delete a regularisation request in any status. If it had changed attendance, the day is put back. The employee is notified, the monthly request limit is freed, and the audit log records who deleted it.</p>
+        <p className="text-sm text-muted-foreground">Cancel and permanently delete a regularisation request in any status. If it had changed attendance, the day is put back. The monthly request limit is freed. Nobody is notified and no record of the deletion is kept.</p>
       </div>
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative flex-1 min-w-[220px]"><Search className="w-4 h-4 absolute left-2.5 top-2.5 text-muted-foreground" /><Input className="pl-8" placeholder="Search employee, code, department" value={search} onChange={(e) => setSearch(e.target.value)} /></div>
@@ -95,11 +94,10 @@ export default function RegularisationDeleteTab() {
               )}
             </div>
           )}
-          <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason for deleting (required, sent to the employee)" />
-          <p className="text-xs text-red-600">This cannot be undone.</p>
+          <p className="text-xs text-red-600">This cannot be undone, and no record of it is kept.</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setTarget(null)} disabled={busy}>Keep request</Button>
-            <Button variant="destructive" onClick={remove} disabled={busy || !preview || reason.trim().length < 3}>{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Delete permanently</Button>
+            <Button variant="destructive" onClick={remove} disabled={busy || !preview}>{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Delete permanently</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
