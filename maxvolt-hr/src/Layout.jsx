@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { base44 } from '@/api/base44Client';
 import { useLocation, useNavigate } from 'react-router-dom';
-import {
+import { Cake,
   LayoutDashboard, Clock, Calendar, FileText, Users, CreditCard,
   Target, HelpCircle, Settings, LogOut, Menu, X, Briefcase,
   DollarSign, FolderOpen, Bell, UserPlus, TrendingDown, BarChart3,
@@ -464,6 +464,7 @@ const frontDeskMenuGroups = [
     { name: 'Asset Tracking',      icon: Laptop,      page: 'AssetTracking' },
     { name: 'ID Cards',            icon: IdCard,      page: 'IdCardGenerator' },
     { name: 'Business Cards',      icon: QrCode,      page: 'BusinessCardAdmin' },
+    { name: 'Celebrations',        icon: Cake,        page: 'CelebrationList' },
     { name: 'Pulse Surveys',       icon: ClipboardList, page: 'PulseSurveys' },
     { name: 'My Profile',          icon: User2,       page: 'GateAdminProfile' },
   ]},

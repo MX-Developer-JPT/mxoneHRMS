@@ -2740,6 +2740,20 @@ router.post('/:name', async (req, res) => {
     const { handleLetters } = await import('./letters.js');
     return await handleLetters(name, p, cu, res);
   }
+  // Month-wise birthdays and work anniversaries (front desk admin, HR, admin) — every cl_* function
+  if (name === 'cl_list' || name === 'cl_export') {
+    if (!(await hasRole(cu, ['admin', 'hr', 'front_desk_admin']))) return res.status(403).json({ error: 'Front desk admin, HR or admin access required' });
+    const { celebrationsFor, buildCelebrationWorkbook } = await import('../utils/celebrations.js');
+    const ist = new Date(Date.now() + 5.5 * 3600000);
+    const year = Number(p.year) || ist.getUTCFullYear();
+    const month = p.month === 0 && name === 'cl_export' ? 0 : Number(p.month) || ist.getUTCMonth() + 1;
+    if (month < 0 || month > 12 || !Number.isInteger(month) || year < 2000 || year > 2100) return res.status(400).json({ error: 'Choose a valid month and year' });
+    const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
+    if (name === 'cl_list') return res.json({ success: true, ...celebrationsFor(employees, month, year) });
+    const kind = ['birthday', 'anniversary'].includes(p.kind) ? p.kind : 'all';
+    const out = await buildCelebrationWorkbook(employees, { month, year, kind }, (await import('exceljs')).default);
+    return res.json({ success: true, base64: Buffer.from(out.buffer).toString('base64'), filename: out.filename });
+  }
   if (name.startsWith('ot_')) {
     const { handleOvertime } = await import('./overtime.js');
     return await handleOvertime(name, p, cu, res);
