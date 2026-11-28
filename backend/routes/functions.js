@@ -2748,7 +2748,8 @@ router.post('/:name', async (req, res) => {
     const year = Number(p.year) || ist.getUTCFullYear();
     const month = p.month === 0 && name === 'cl_export' ? 0 : Number(p.month) || ist.getUTCMonth() + 1;
     if (month < 0 || month > 12 || !Number.isInteger(month) || year < 2000 || year > 2100) return res.status(400).json({ error: 'Choose a valid month and year' });
-    const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'"));
+    const logins = Object.fromEntries((await all('SELECT id, email FROM users')).map(u => [u.id, u.email]));
+    const employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee'")).map(e => ({ ...e, login_email: logins[e.user_id] || '' }));
     if (name === 'cl_list') return res.json({ success: true, ...celebrationsFor(employees, month, year) });
     const kind = ['birthday', 'anniversary'].includes(p.kind) ? p.kind : 'all';
     const out = await buildCelebrationWorkbook(employees, { month, year, kind }, (await import('exceljs')).default);

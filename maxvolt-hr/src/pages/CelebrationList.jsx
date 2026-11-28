@@ -45,7 +45,7 @@ export default function CelebrationList() {
   const years = [now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1];
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
+    <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><Cake className="w-6 h-6 text-pink-600" />Birthdays & Anniversaries</h1>
@@ -75,19 +75,21 @@ export default function CelebrationList() {
           <p className="text-sm text-gray-600"><b>{t.birthdays}</b> birthday(s) and <b>{t.anniversaries}</b> work anniversary(ies) in {MONTHS[month - 1]} {year}.
             {t.missing_birth_date > 0 && <span className="text-amber-700"> {t.missing_birth_date} employee(s) have no date of birth on record.</span>}</p>
           <Card><CardContent className="p-0 overflow-x-auto">
-            <table className="w-full text-sm min-w-[640px]">
-              <thead className="bg-gray-50 text-xs text-gray-500 uppercase"><tr>{['Employee code', 'Name', 'Department', 'Birthday', 'Work anniversary'].map((h) => <th key={h} className="text-left px-4 py-2.5">{h}</th>)}</tr></thead>
+            <table className="w-full text-sm min-w-[860px]">
+              <thead className="bg-gray-50 text-xs text-gray-500 uppercase"><tr>{['Employee code', 'Name', 'Department', 'Contact number', 'Email', 'Birthday', 'Work anniversary'].map((h) => <th key={h} className="text-left px-4 py-2.5">{h}</th>)}</tr></thead>
               <tbody className="divide-y">
                 {rows.map((r) => (
                   <tr key={`${r.employee_code}-${r.name}`} className="hover:bg-gray-50">
                     <td className="px-4 py-2.5 text-gray-600">{r.employee_code}</td>
                     <td className="px-4 py-2.5 font-medium text-gray-900">{r.name}</td>
                     <td className="px-4 py-2.5 text-gray-600">{r.department || '—'}</td>
+                    <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">{r.phone || r.official_phone ? <>{r.phone && <a className="block hover:underline" href={`tel:${r.phone}`}>{r.phone}</a>}{r.official_phone && <span className="block text-xs text-gray-400">Official: {r.official_phone}</span>}</> : '—'}</td>
+                    <td className="px-4 py-2.5 text-gray-600 break-all">{r.email || r.personal_email ? <>{r.email && <a className="block hover:underline" href={`mailto:${r.email}`}>{r.email}</a>}{r.personal_email && <span className="block text-xs text-gray-400">Personal: {r.personal_email}</span>}</> : '—'}</td>
                     <td className="px-4 py-2.5">{r.birthday ? <span className="inline-flex items-center gap-1.5 text-pink-700"><Cake className="w-3.5 h-3.5" />{r.birthday}</span> : '—'}</td>
                     <td className="px-4 py-2.5">{r.anniversary ? <span className="inline-flex items-center gap-1.5 text-blue-700"><Award className="w-3.5 h-3.5" />{r.anniversary} · {r.years} yr{r.years > 1 ? 's' : ''}</span> : '—'}</td>
                   </tr>
                 ))}
-                {!rows.length && <tr><td colSpan={5} className="py-10 text-center text-gray-400">Nobody in {MONTHS[month - 1]}</td></tr>}
+                {!rows.length && <tr><td colSpan={7} className="py-10 text-center text-gray-400">Nobody in {MONTHS[month - 1]}</td></tr>}
               </tbody>
             </table>
           </CardContent></Card>

@@ -15,6 +15,17 @@ export function dateParts(v) {
   return y > 1900 && real.getUTCMonth() === mo - 1 && real.getUTCDate() === d ? { y, m: mo, d } : null;
 }
 
+/** Contact details: personal and official number; work email (the recorded official one, else the login) and personal email. */
+export function contactOf(e) {
+  const clean = (v) => String(v || '').trim();
+  const personal = clean(e.personal_email);
+  const work = clean(e.official_email) || (clean(e.login_email).toLowerCase() === personal.toLowerCase() ? '' : clean(e.login_email));
+  return { phone: clean(e.phone), official_phone: clean(e.official_phone), email: work, personal_email: personal };
+}
+const CONTACT_HEADS = ['Contact number', 'Official number', 'Email', 'Personal email'];
+const CONTACT_WIDTHS = [16, 16, 30, 30];
+const contactCells = (x) => [x.phone, x.official_phone, x.email, x.personal_email];
+
 const pad = (n) => String(n).padStart(2, '0');
 const dayLabel = (p) => `${pad(p.d)} ${MONTHS[p.m - 1].slice(0, 3)}`;
 
@@ -35,6 +46,7 @@ export function celebrationsFor(employees, month, year) {
     if (!birthday && !anniversary) continue;
     rows.push({
       employee_code: e.employee_code || '', name: e.display_name || '', department: e.department || '', designation: e.designation || '',
+      ...contactOf(e),
       birthday: birthday ? dayLabel(birthday) : '', birthday_day: birthday?.d || null,
       anniversary: anniversary ? dayLabel(anniversary) : '', anniversary_day: anniversary?.d || null,
       joined: anniversary ? `${dayLabel(anniversary)} ${anniversary.y}` : '', years: anniversary ? year - anniversary.y : null,
@@ -55,9 +67,9 @@ export async function buildCelebrationWorkbook(employees, { month, year, kind = 
   const combined = (m, name) => {
     const r = celebrationsFor(employees, m, year);
     const rows = r.rows.filter((x) => (kind === 'birthday' ? x.birthday : kind === 'anniversary' ? x.anniversary : true));
-    const ws = sheetWithTitle(wb, name, `BIRTHDAYS & WORK ANNIVERSARIES — ${MONTHS[m - 1].toUpperCase()} ${year}`, `Maxvolt Energy Industries Limited  |  Birthdays: ${r.totals.birthdays}  |  Work anniversaries: ${r.totals.anniversaries}  |  ${generated}`, 7);
-    table(ws, ['Employee code', 'Name', 'Department', 'Designation', 'Birthday', 'Work anniversary', 'Years completed'],
-      rows.map((x) => [x.employee_code, x.name, x.department, x.designation, x.birthday, x.anniversary, x.years ?? '']), [15, 28, 20, 24, 12, 18, 16]);
+    const ws = sheetWithTitle(wb, name, `BIRTHDAYS & WORK ANNIVERSARIES — ${MONTHS[m - 1].toUpperCase()} ${year}`, `Maxvolt Energy Industries Limited  |  Birthdays: ${r.totals.birthdays}  |  Work anniversaries: ${r.totals.anniversaries}  |  ${generated}`, 11);
+    table(ws, ['Employee code', 'Name', 'Department', 'Designation', ...CONTACT_HEADS, 'Birthday', 'Work anniversary', 'Years completed'],
+      rows.map((x) => [x.employee_code, x.name, x.department, x.designation, ...contactCells(x), x.birthday, x.anniversary, x.years ?? '']), [15, 28, 20, 24, ...CONTACT_WIDTHS, 12, 18, 16]);
     return r;
   };
   if (!month) {
@@ -67,12 +79,12 @@ export async function buildCelebrationWorkbook(employees, { month, year, kind = 
   const r = combined(month, `${MONTHS[month - 1]} list`);
   const sub = `Maxvolt Energy Industries Limited  |  ${MONTHS[month - 1]} ${year}  |  ${generated}`;
   if (kind !== 'anniversary') {
-    const ws = sheetWithTitle(wb, 'Birthdays', `BIRTHDAYS — ${MONTHS[month - 1].toUpperCase()}`, sub, 5);
-    table(ws, ['Birthday', 'Employee code', 'Name', 'Department', 'Designation'], r.rows.filter((x) => x.birthday).sort((a, b) => a.birthday_day - b.birthday_day || a.name.localeCompare(b.name)).map((x) => [x.birthday, x.employee_code, x.name, x.department, x.designation]), [12, 15, 28, 20, 24]);
+    const ws = sheetWithTitle(wb, 'Birthdays', `BIRTHDAYS — ${MONTHS[month - 1].toUpperCase()}`, sub, 9);
+    table(ws, ['Birthday', 'Employee code', 'Name', 'Department', 'Designation', ...CONTACT_HEADS], r.rows.filter((x) => x.birthday).sort((a, b) => a.birthday_day - b.birthday_day || a.name.localeCompare(b.name)).map((x) => [x.birthday, x.employee_code, x.name, x.department, x.designation, ...contactCells(x)]), [12, 15, 28, 20, 24, ...CONTACT_WIDTHS]);
   }
   if (kind !== 'birthday') {
-    const ws = sheetWithTitle(wb, 'Work anniversaries', `WORK ANNIVERSARIES — ${MONTHS[month - 1].toUpperCase()} ${year}`, sub, 7);
-    table(ws, ['Anniversary', 'Employee code', 'Name', 'Department', 'Designation', 'Date of joining', 'Years completed'], r.rows.filter((x) => x.anniversary).sort((a, b) => a.anniversary_day - b.anniversary_day || a.name.localeCompare(b.name)).map((x) => [x.anniversary, x.employee_code, x.name, x.department, x.designation, x.joined, x.years]), [14, 15, 28, 20, 24, 17, 16]);
+    const ws = sheetWithTitle(wb, 'Work anniversaries', `WORK ANNIVERSARIES — ${MONTHS[month - 1].toUpperCase()} ${year}`, sub, 11);
+    table(ws, ['Anniversary', 'Employee code', 'Name', 'Department', 'Designation', ...CONTACT_HEADS, 'Date of joining', 'Years completed'], r.rows.filter((x) => x.anniversary).sort((a, b) => a.anniversary_day - b.anniversary_day || a.name.localeCompare(b.name)).map((x) => [x.anniversary, x.employee_code, x.name, x.department, x.designation, ...contactCells(x), x.joined, x.years]), [14, 15, 28, 20, 24, ...CONTACT_WIDTHS, 17, 16]);
   }
   return { buffer: await wb.xlsx.writeBuffer(), filename: `${kind === 'birthday' ? 'Birthdays' : kind === 'anniversary' ? 'Work_Anniversaries' : 'Birthdays_Anniversaries'}_${MONTHS[month - 1]}_${year}.xlsx` };
 }

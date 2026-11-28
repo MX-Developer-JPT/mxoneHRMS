@@ -28,4 +28,12 @@ await t('the Excel has the month list, or one sheet per month', async () => {
   const all = new ExcelJS.Workbook(); await all.xlsx.load((await buildCelebrationWorkbook(list, { month: 0, year: 2026 }, ExcelJS)).buffer);
   assert.equal(all.worksheets.length, 12);
 });
+await t('contact numbers and emails appear on the list and in every month sheet', async () => {
+  const one = [e('Z', '1990-12-20', '2020-12-01', { phone: '9876500000', official_phone: '9876511111', official_email: '', login_email: 'z@work.test', personal_email: 'z@home.test' })];
+  const row = celebrationsFor(one, 12, 2026).rows[0];
+  assert.deepEqual([row.phone, row.official_phone, row.email, row.personal_email], ['9876500000', '9876511111', 'z@work.test', 'z@home.test']);
+  assert.equal(celebrationsFor([{ ...one[0], login_email: 'Z@home.test' }], 12, 2026).rows[0].email, '', 'a personal login is not shown twice');
+  const wb = new ExcelJS.Workbook(); await wb.xlsx.load((await buildCelebrationWorkbook(one, { month: 12, year: 2026 }, ExcelJS)).buffer);
+  for (const ws of wb.worksheets) { const text = JSON.stringify(ws.getSheetValues()); assert.ok(text.includes('9876500000') && text.includes('z@work.test') && text.includes('z@home.test') && text.includes('Contact number'), ws.name); }
+});
 console.log(`\n${n} passed`);
