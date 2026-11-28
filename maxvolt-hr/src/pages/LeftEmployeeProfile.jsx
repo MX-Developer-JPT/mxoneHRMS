@@ -49,16 +49,18 @@ export default function LeftEmployeeProfile() {
   const [showProfile, setShowProfile] = useState(false);
   const [showExit, setShowExit] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => { if (userId) load(); }, [userId]);
 
   const load = async () => {
-    setLoading(true);
+    setLoading(true); setLoadError('');
     try {
       const [empRows, usersRes, exits, lv, pay, perf, asst, docs] = await Promise.all([
         base44.entities.Employee.filter({ user_id: userId }),
-        base44.functions.invoke('getAllUsers', {}),
-        base44.entities.Exit.filter({ user_id: userId }),
+        base44.functions.invoke('getAllUsers', {}).catch(() => ({})),
+        // one section failing must never hide the whole profile
+        base44.entities.Exit.filter({ user_id: userId }).catch(() => []),
         base44.entities.Leave.filter({ user_id: userId }, '-created_date', 200).catch(() => []),
         base44.entities.Payroll.filter({ user_id: userId }, '-year', 100).catch(() => []),
         base44.entities.PerformanceReview.filter({ user_id: userId }).catch(() => []),
@@ -76,7 +78,7 @@ export default function LeftEmployeeProfile() {
       setPerformance(perf || []);
       setAssets(asst || []);
       setDocuments(docs || []);
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); setLoadError(e.message || 'Could not load this profile'); }
     setLoading(false);
   };
 
@@ -95,7 +97,8 @@ export default function LeftEmployeeProfile() {
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
   if (!employee) return (
     <div className="p-6 text-center text-gray-400">
-      <p>Employee record not found.</p>
+      <p>{loadError ? `Could not load this profile: ${loadError}` : 'Employee record not found.'}</p>
+      {loadError && <Button variant="outline" className="mt-3 mr-2" onClick={load}>Try again</Button>}
       <Button variant="outline" className="mt-3" onClick={() => navigate('/LeftEmployees')}><ArrowLeft className="w-4 h-4 mr-1.5" />Back to Left Employees</Button>
     </div>
   );
@@ -113,7 +116,7 @@ export default function LeftEmployeeProfile() {
               {(employee.user?.full_name || '?')[0]}
             </div>
             <div>
-              <h1 className="text-xl font-bold">{employee.user?.full_name}</h1>
+              <h1 className="text-xl font-bold">{employee.user?.full_name || employee.display_name}</h1>
               <p className="text-sm text-gray-500">{employee.designation} · {employee.department} · {employee.employee_code}</p>
               <div className="flex items-center gap-2 mt-1">
                 <Badge className="bg-gray-200 text-gray-700 capitalize">{employee.status}</Badge>

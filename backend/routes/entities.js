@@ -851,6 +851,8 @@ router.use('/Exit', async (req, res, next) => {
   const cu = getCurrentUser(req);
   if (!cu) return res.status(401).json({ error: 'Unauthorized' });
   const parts = req.path.split('/').filter(Boolean);
+  // POST /Exit/filter only reads (the app queries records with a POST): blocking it broke My Exit and the leaver profile
+  if (req.method === 'POST' && parts.length === 1 && parts[0] === 'filter') return next();
   if (req.method !== 'PATCH' && req.method !== 'PUT') return res.status(403).json({ error: 'Exit cases are created and changed through the exit workflow' });
   if (parts.length !== 1) return next();
   const role = await getEffectiveRole(cu);
