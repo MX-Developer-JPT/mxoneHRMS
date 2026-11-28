@@ -12,6 +12,7 @@ import { isRuledOd } from '../utils/odRules.js';
 import { scaleContent, renderOnOnePage, fitScale } from '../utils/pdfFit.js';
 import { snapshotBefore } from '../utils/regularisationRestore.js';
 import { withName } from '../utils/actorName.js';
+import { applyGeofencePunch } from '../utils/geofencePunch.js';
 import { withVisitorNames } from '../utils/visitorNames.js';
 import { withEvent, visitTimeline, exitTime, istText, EVENT_LABELS } from '../utils/visitorRecord.js';
 import { flagLeftWithoutGatePass, leftWithoutGatePass, buildLeftWorkbook } from '../utils/leftWithoutGatePass.js';
@@ -5037,56 +5038,12 @@ router.post('/:name', async (req, res) => {
       }
 
       const priorSessionData = buildSessions(rawPunches);
-      let locationTransfer = false;
-      let resumedSession = false;
-
-      // Ordering: an event older than the newest punch already on the
-      // timeline (late offline delivery, clock skew, a biometric punch synced
-      // meanwhile) can't be inserted without corrupting IN/OUT parity.
-      const lastPunchMs = rawPunches.reduce((m, pp) => Math.max(m, Date.parse(pp.time) || 0), 0);
-      if (lastPunchMs && evIST.getTime() < lastPunchMs - 1000) return res.json({ success: true, action: 'none', reason: 'stale_event' });
-      const GEO_FLAP_MS = 30000;      // re-entry this soon after a geofence exit = GPS flapping, not a new session
-      const GEO_MIN_DWELL_MS = 5000; // exit this soon after the geofence enter that opened the session = noise
-      if (event === 'exit' && priorSessionData.is_in_progress && ngAtt?.geofence_open_in
-          && evIST.getTime() - Date.parse(ngAtt.geofence_open_in) < GEO_MIN_DWELL_MS) {
-        return res.json({ success: true, action: 'none', reason: 'too_soon_after_enter' });
-      }
-      if (event === 'enter' && !priorSessionData.is_in_progress && ngAtt?.check_out_source === 'geofence' && rawPunches.length) {
-        const lastIdx = rawPunches.reduce((bi, pp, i) => (Date.parse(pp.time) >= Date.parse(rawPunches[bi].time) ? i : bi), 0);
-        const lp = rawPunches[lastIdx];
-        if (lp.device_direction === 'OUT' && evIST.getTime() - Date.parse(lp.time) <= GEO_FLAP_MS) {
-          rawPunches.splice(lastIdx, 1); // cancel the flapped exit: the same session simply continues
-          resumedSession = true;
-        }
-      }
-      if (event === 'enter') {
-        if (priorSessionData.is_in_progress) {
-          // Already checked in — but is it at THIS location, or one they've
-          // physically left? An employee walking directly from one
-          // configured location to another (e.g. Duhai to a different
-          // Ghaziabad site) without ever registering as "outside every
-          // fence" in between previously left them stuck showing present
-          // at the first location forever, since this branch unconditionally
-          // no-op'd on "already checked in" without checking WHERE. Now: if
-          // the currently open session's location differs from where this
-          // enter event resolved to, treat it as a location transfer —
-          // close the old session and open a new one at this enter's
-          // timestamp, rather than silently ignoring it.
-          if (ngAtt?.geofence_location && ngFence?.name && ngAtt.geofence_location !== ngFence.name) {
-            rawPunches.push({ time: evIST.toISOString(), device_direction: 'OUT' });
-            rawPunches.push({ time: evIST.toISOString(), device_direction: 'IN' });
-            locationTransfer = true;
-          } else {
-            return res.json({ success: true, action: 'none', reason: 'already_checked_in' });
-          }
-        } else if (!resumedSession) {
-          rawPunches.push({ time: evIST.toISOString(), device_direction: 'IN' });
-        }
-      } else {
-        if (!priorSessionData.is_in_progress) return res.json({ success: true, action: 'none', reason: rawPunches.length ? 'already_checked_out' : 'not_checked_in' });
-        if (!ngRules.geofenceExitAllowed({ ...ngAtt, raw_punches: rawPunches })) return res.json({ success: true, action: 'none', reason: 'not_geofence_session' });
-        rawPunches.push({ time: evIST.toISOString(), device_direction: 'OUT' });
-      }
+      // what the event does to the punches (utils/geofencePunch.js)
+      const ngStep = applyGeofencePunch({ att: ngAtt, punches: rawPunches, inProgress: priorSessionData.is_in_progress, event, atMs: evIST.getTime(), fenceName: ngFence?.name });
+      if (ngStep.skip) return res.json({ success: true, action: 'none', reason: ngStep.skip });
+      rawPunches = ngStep.punches;
+      const locationTransfer = ngStep.action === 'location_transfer';
+      const resumedSession = ngStep.reason === 'session_resumed';
 
       const sessionData = buildSessions(rawPunches);
       const shift = { working_hours: 8, grace_period_minutes: 15, ...ngShiftForDate };
@@ -5114,7 +5071,7 @@ router.post('/:name', async (req, res) => {
         geofence_location: ngFence?.name || location_name || '',
         // Marks which session the geofence opened, so only that one is ever
         // auto-closed by a later exit (never a manual / WFH / OD session).
-        geofence_open_in: event === 'enter' ? (resumedSession ? (ngAtt?.geofence_open_in || evIST.toISOString()) : evIST.toISOString()) : null,
+        geofence_open_in: ngStep.openIn,   // always the time of the punch that opened the session, so the exit can close it
         geofence_event_ids: event_id ? [...seenIds, event_id].slice(-200) : seenIds,
         // An event the phone reported late (offline queue) is stamped with the phone's own time of crossing. Record how late, so HR can see
         // every punch whose time came from the phone's clock rather than the server's.

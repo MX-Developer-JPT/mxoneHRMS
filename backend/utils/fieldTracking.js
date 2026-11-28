@@ -578,7 +578,9 @@ export function accuracyStats(accs) {
 export function geofenceExitAllowed(att) {
   if (!att?.geofence_open_in) return false;
   const last = (att.raw_punches || [])[(att.raw_punches || []).length - 1];
-  return !!last && last.device_direction === 'IN' && Date.parse(last.time) === Date.parse(att.geofence_open_in);
+  // The marker is normally the open punch itself. It is later than that punch on days where a quick return used to stamp
+  // the return time instead: the open session is still the geofence's. A newer punch than the marker is somebody else's.
+  return !!last && last.device_direction === 'IN' && Date.parse(att.geofence_open_in) >= Date.parse(last.time);
 }
 
 // One line of history for every geofence event a phone sends: what it was, from which engine, and what the server did with it.
