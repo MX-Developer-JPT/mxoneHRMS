@@ -14,6 +14,9 @@ import { toast } from 'sonner';
 import { openLetterheadPrintWindow } from '../utils/letterhead';
 import MobileSelect from '@/components/MobileSelect';
 import { safeDate } from '@/lib/dateUtils';
+import { Link } from 'react-router-dom';
+import SignatoryManager from '@/components/letters/SignatoryManager';
+import SendLetterDialog from '@/components/letters/SendLetterDialog';
 
 // Letter types and the extra fields each one needs
 const LETTER_TYPES = [
@@ -32,117 +35,14 @@ const LETTER_TYPES = [
 const typeMeta = (k) => LETTER_TYPES.find(t => t.key === k);
 
 function OfferLetterPanel() {
-  const defaultJoining = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const [candidates, setCandidates] = useState([]);
-  const [search, setSearch] = useState('');
-  const [selected, setSelected] = useState(null);
-  const [form, setForm] = useState({ annual_ctc: '', joining_date: defaultJoining, designation: '', department: '', location: 'Ghaziabad, Uttar Pradesh', probation_months: 6, offer_valid_days: 7 });
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [acceptLink, setAcceptLink] = useState('');
-
-  useEffect(() => {
-    base44.entities.Candidate.filter({}).then(rows => {
-      setCandidates(rows.filter(c => ['selected', 'interview_done', 'shortlisted'].includes(c.status) && c.email));
-    }).catch(() => {});
-  }, []);
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-    return candidates.filter(c => !q || (c.full_name || '').toLowerCase().includes(q) || (c.position_applied || '').toLowerCase().includes(q));
-  }, [candidates, search]);
-
-  const handleSend = async () => {
-    if (!selected) { toast.error('Select a candidate'); return; }
-    if (!form.annual_ctc || !form.joining_date) { toast.error('CTC and Joining Date are required'); return; }
-    setSending(true);
-    try {
-      const res = await base44.functions.invoke('sendOfferLetter', {
-        candidate_id: selected.id,
-        annual_ctc: Number(form.annual_ctc),
-        joining_date: form.joining_date,
-        designation: form.designation || selected.position_applied,
-        department: form.department || selected.department,
-        location: form.location,
-        probation_months: Number(form.probation_months) || 6,
-        offer_valid_days: Number(form.offer_valid_days) || 7,
-      });
-      if (res.data?.success) {
-        setSent(true);
-        setAcceptLink(res.data.accept_link || '');
-        if (res.data.email_error) {
-          toast.warning(`Saved but email failed: ${res.data.email_error}`);
-        } else {
-          toast.success(`Offer letter sent to ${selected.email}`);
-        }
-      } else {
-        toast.error(res.data?.error || 'Failed to send');
-      }
-    } catch (e) { toast.error(e.message); }
-    setSending(false);
-  };
-
-  if (sent) return (
-    <Card>
-      <CardContent className="p-6 text-center space-y-3">
-        <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto" />
-        <p className="font-semibold text-gray-800">Offer letter sent to {selected?.email}</p>
-        {acceptLink && (
-          <div className="flex items-center gap-2 justify-center flex-wrap">
-            <span className="text-xs text-gray-500 break-all">{acceptLink}</span>
-            <Button size="sm" variant="outline" onClick={() => { navigator.clipboard.writeText(acceptLink); toast.success('Link copied'); }}>Copy Link</Button>
-          </div>
-        )}
-        <Button size="sm" onClick={() => { setSent(false); setSelected(null); setAcceptLink(''); setForm({ annual_ctc: '', joining_date: defaultJoining, designation: '', department: '', location: 'Ghaziabad, Uttar Pradesh', probation_months: 6, offer_valid_days: 7 }); }}>New Offer</Button>
-      </CardContent>
-    </Card>
-  );
-
   return (
     <Card>
-      <CardContent className="p-5 space-y-4">
-        <div className="flex items-center gap-2 mb-1">
+      <CardContent className="p-4 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
           <Users className="w-4 h-4 text-orange-500" />
-          <span className="font-semibold text-gray-800">Candidate Offer Letter</span>
+          <div><p className="font-semibold text-gray-800">Candidate offer letters</p><p className="text-xs text-gray-500">Salary break-up, preview, dispatch and history are on the Offer Letters page.</p></div>
         </div>
-        {selected ? (
-          <div className="flex items-center gap-3 border rounded-lg p-2.5 bg-orange-50">
-            <div className="w-9 h-9 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold">{(selected.full_name || '?')[0]}</div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{selected.full_name}</p>
-              <p className="text-xs text-gray-400 truncate">{selected.position_applied} · {selected.email}</p>
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>Change</Button>
-          </div>
-        ) : (
-          <div>
-            <div className="relative mb-2">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <Input className="pl-9" placeholder="Search candidate…" value={search} onChange={e => setSearch(e.target.value)} />
-            </div>
-            <div className="max-h-44 overflow-y-auto border rounded-lg divide-y">
-              {filtered.length === 0
-                ? <p className="p-3 text-sm text-gray-400">No eligible candidates (must be selected/interviewed with email)</p>
-                : filtered.map(c => (
-                  <button key={c.id} onClick={() => { setSelected(c); setForm(f => ({ ...f, designation: c.position_applied || '', department: c.department || '' })); }} className="w-full flex items-center gap-3 p-2.5 hover:bg-orange-50 text-left">
-                    <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">{(c.full_name || '?')[0]}</div>
-                    <div className="min-w-0"><p className="text-sm font-medium truncate">{c.full_name}</p><p className="text-xs text-gray-400 truncate">{c.position_applied} · {c.email}</p></div>
-                  </button>
-                ))}
-            </div>
-          </div>
-        )}
-        <div className="grid grid-cols-2 gap-3">
-          <div><Label className="text-xs">Annual CTC (₹) *</Label><Input type="number" className="mt-1" placeholder="e.g. 500000" value={form.annual_ctc} onChange={e => setForm(f => ({ ...f, annual_ctc: e.target.value }))} /></div>
-          <div><Label className="text-xs">Joining Date *</Label><Input type="date" className="mt-1" value={form.joining_date} onChange={e => setForm(f => ({ ...f, joining_date: e.target.value }))} /></div>
-          <div><Label className="text-xs">Designation</Label><Input className="mt-1" placeholder="As per offer" value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))} /></div>
-          <div><Label className="text-xs">Department</Label><Input className="mt-1" placeholder="Department" value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} /></div>
-          <div><Label className="text-xs">Probation (months)</Label><Input type="number" className="mt-1" value={form.probation_months} onChange={e => setForm(f => ({ ...f, probation_months: e.target.value }))} /></div>
-          <div><Label className="text-xs">Offer Valid (days)</Label><Input type="number" className="mt-1" value={form.offer_valid_days} onChange={e => setForm(f => ({ ...f, offer_valid_days: e.target.value }))} /></div>
-        </div>
-        <Button onClick={handleSend} disabled={sending || !selected} className="w-full bg-orange-500 hover:bg-orange-600 text-white">
-          {sending ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Sending…</> : <><Send className="w-4 h-4 mr-2" /> Send Offer Letter</>}
-        </Button>
+        <Button asChild className="bg-orange-500 hover:bg-orange-600 text-white"><Link to="/OfferLetters">Create offer letter</Link></Button>
       </CardContent>
     </Card>
   );
@@ -207,6 +107,8 @@ function LetterHistoryPanel() {
                   <th className="px-3 py-2 font-medium">Letter Type</th>
                   <th className="px-3 py-2 font-medium">Ref</th>
                   <th className="px-3 py-2 font-medium">Date</th>
+                  <th className="px-3 py-2 font-medium">Sent to</th>
+                  <th className="px-3 py-2 font-medium">Delivery</th>
                   <th className="px-3 py-2 font-medium">Linked PMS Review</th>
                   <th className="px-3 py-2 font-medium text-right">Document</th>
                 </tr>
@@ -218,6 +120,12 @@ function LetterHistoryPanel() {
                     <td className="px-3 py-2 text-gray-600">{LETTER_TYPE_LABELS[l.letter_type] || l.letter_type}</td>
                     <td className="px-3 py-2 text-gray-500">{l.ref || '—'}</td>
                     <td className="px-3 py-2 text-gray-500">{safeDate(l.created_at, 'dd MMM yyyy')}</td>
+                    <td className="px-3 py-2 text-gray-500 break-all">{l.recipient_email || '—'}</td>
+                    <td className="px-3 py-2">
+                      {l.delivery_status
+                        ? <span className={`px-2 py-0.5 rounded-full capitalize ${l.delivery_status === 'sent' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`} title={l.sent_at ? safeDate(l.sent_at, 'dd MMM yyyy, h:mm a') : ''}>{l.delivery_status}</span>
+                        : <span className="text-gray-400">Not sent</span>}
+                    </td>
                     <td className="px-3 py-2">
                       {l.performance_review_id
                         ? <span className="inline-flex items-center gap-1 text-indigo-600"><Link2 className="w-3 h-3" /> Linked</span>
@@ -380,6 +288,15 @@ export default function LetterGenerator() {
   const [saved, setSaved] = useState(false);
   const [approveSending, setApproveSending] = useState(false);
   const [approveSent, setApproveSent] = useState(false);
+  const [documentId, setDocumentId] = useState('');
+  const [sendOpen, setSendOpen] = useState(false);
+  const [signatories, setSignatories] = useState([]);
+  const [canEditSignatories, setCanEditSignatories] = useState(false);
+  const [manageSignatories, setManageSignatories] = useState(false);
+  const [customSignatoryTitle, setCustomSignatoryTitle] = useState('');
+  useEffect(() => {
+    base44.functions.invoke('sg_list', {}).then(r => { const d = r?.data || r; setSignatories(d.signatories || []); setCanEditSignatories(!!d.can_edit); }).catch(() => {});
+  }, []);
 
   // HR/Manager employees for signatory selection
   const managers = useMemo(() =>
@@ -421,7 +338,9 @@ export default function LetterGenerator() {
         user_id: selectedEmp.user_id, letter_type: letterType,
         extra: {
           ...extra,
-          signatory: signatory === '__custom' ? customSignatoryName : signatory,
+          ...(signatory.startsWith('id:') ? { signatory_id: signatory.slice(3) }
+            : signatory === '__custom' ? { signatory: customSignatoryName, signatory_designation: customSignatoryTitle }
+              : { signatory, signatory_designation: managers.find(m => m.display_name === signatory)?.designation || '' }),
           ...(Object.keys(ctcOverride).some(k => ctcOverride[k]) ? { ctc_override: ctcOverride } : {}),
         },
       });
@@ -433,6 +352,7 @@ export default function LetterGenerator() {
         setEditMode(false);
         setSaved(false);
         setApproveSent(false);
+        setDocumentId('');
         setStructureUpdated(false);
       } else toast.error(d.error || 'Generation failed');
     } catch (e) { toast.error('Error: ' + e.message); }
@@ -483,7 +403,7 @@ export default function LetterGenerator() {
     if (!letter || !selectedEmp) return;
     setSaving(true);
     try {
-      await base44.functions.invoke('saveLetterAsDocument', {
+      const saveRes = await base44.functions.invoke('saveLetterAsDocument', {
         user_id: selectedEmp.user_id,
         letter_type: letterType,
         letter_content: letter,
@@ -491,6 +411,7 @@ export default function LetterGenerator() {
         employee_name: selectedEmp.display_name,
         ...(performanceReviewId ? { performance_review_id: performanceReviewId } : {}),
       });
+      setDocumentId((saveRes?.data || saveRes)?.document_id || '');
       setSaved(true);
       toast.success('Letter saved to employee Documents');
     } catch (e) {
@@ -499,7 +420,7 @@ export default function LetterGenerator() {
     setSaving(false);
   };
 
-  const approveAndSend = async () => {
+  const approveAndSend = async (recipient) => {
     if (!letter || !selectedEmp) return;
     setApproveSending(true);
     try {
@@ -509,16 +430,20 @@ export default function LetterGenerator() {
         letter_content: letter,
         ref,
         employee_name: selectedEmp.display_name,
+        ...recipient,
+        ...(documentId ? { document_id: documentId } : {}),
         ...(cc.trim() ? { cc: cc.trim() } : {}),
         ...(performanceReviewId ? { performance_review_id: performanceReviewId } : {}),
       });
       if (res.data?.success) {
-        setApproveSent(true);
         setSaved(true);
+        setDocumentId(res.data.document_id || '');
         if (res.data.email_error) {
-          toast.warning(`Saved to Documents, but email failed: ${res.data.email_error}`);
+          toast.error(`Saved to Documents, but the email to ${res.data.recipient_email} failed: ${res.data.email_error}`);
         } else {
-          toast.success(`Letter approved, saved to Documents, and emailed to ${selectedEmp.display_name}`);
+          setApproveSent(true);
+          setSendOpen(false);
+          toast.success(`Letter saved to Documents and emailed to ${res.data.recipient_email}`);
         }
       } else {
         toast.error(res.data?.error || 'Failed');
@@ -662,7 +587,10 @@ export default function LetterGenerator() {
 
               {/* Signatory selector */}
               <div>
-                <Label className="text-xs">Authorised Signatory</Label>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">Authorised Signatory</Label>
+                  {canEditSignatories && <button type="button" className="text-xs text-indigo-600" onClick={() => setManageSignatories(true)}>Signatories…</button>}
+                </div>
                 <div className="mt-1">
                   <MobileSelect
                     label="Authorised Signatory"
@@ -671,6 +599,7 @@ export default function LetterGenerator() {
                     onValueChange={setSignatory}
                     options={[
                       { value: '', label: '— Default (Authorised Signatory) —' },
+                      ...signatories.map(x => ({ value: `id:${x.id}`, label: `${x.name} · ${x.designation}${x.signature ? ' · signature on file' : ''}` })),
                       ...managers.map(m => ({ value: m.display_name, label: `${m.display_name} · ${m.designation || m.department}` })),
                       { value: '__custom', label: 'Enter custom name…' },
                     ]}
@@ -685,6 +614,10 @@ export default function LetterGenerator() {
                     autoFocus
                   />
                 )}
+                {signatory === '__custom' && (
+                  <Input className="mt-1 text-sm" placeholder="Designation of signatory" value={customSignatoryTitle} onChange={e => setCustomSignatoryTitle(e.target.value)} />
+                )}
+                {!signatories.length && <p className="text-[10px] text-amber-700 mt-1">Add signatories with their signature image so every letter carries name, designation and signature.</p>}
               </div>
 
               {/* CTC Breakdown for relevant letter types */}
@@ -735,7 +668,7 @@ export default function LetterGenerator() {
                         {saving ? <RefreshCw className="w-3.5 h-3.5 mr-1 animate-spin" /> : saved ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Save className="w-3.5 h-3.5 mr-1" />}
                         {saved ? 'Saved' : 'Save to Docs'}
                       </Button>
-                      <Button size="sm" onClick={approveAndSend} disabled={approveSending || approveSent}
+                      <Button size="sm" onClick={() => setSendOpen(true)} disabled={approveSending || approveSent}
                         className={approveSent ? 'bg-green-700 hover:bg-green-700 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}>
                         {approveSending ? <RefreshCw className="w-3.5 h-3.5 mr-1 animate-spin" /> : approveSent ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Send className="w-3.5 h-3.5 mr-1" />}
                         {approveSent ? 'Sent' : 'Approve & Send'}
@@ -819,6 +752,10 @@ export default function LetterGenerator() {
           <LetterHistoryPanel />
         </TabsContent>
       </Tabs>
+
+      <SignatoryManager open={manageSignatories} onClose={() => setManageSignatories(false)} signatories={signatories} onChange={setSignatories} />
+      <SendLetterDialog open={sendOpen} userId={selectedEmp?.user_id} employeeName={selectedEmp?.display_name} letterLabel={meta?.label || 'letter'}
+        sending={approveSending} onClose={() => setSendOpen(false)} onSend={approveAndSend} />
     </div>
   );
 }

@@ -14,6 +14,7 @@ import { TRAVEL, ACTIVE_TRAVEL, isTravel, istNow, passNo, historyEntry, withHist
 import { isRoasterPolicy, roasterErrors } from '../utils/roaster.js';
 import { loadRoasterConfig } from '../utils/roasterConfig.js';
 import { elBlockedByProbation } from '../cron/leaveGrantAutomation.js';
+import { decorateOvertime, clearOvertimeCache } from '../utils/overtimeData.js';
 
 const router = Router();
 
@@ -839,7 +840,7 @@ async function assetValidation(data, current) {
   return { atype, problem: assetProblem(data, current, atype, others) };
 }
 
-const PRIVATE_TYPES = new Set(['HrEmailAudit', 'SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot', 'CvReviewBatch', 'RecruitmentConfig', 'CandidateIntake', 'FieldTrip', 'FieldTripSnap', 'TrackingDevice', 'FieldDaySummary']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them; FieldTrip holds the GPS trail of field staff — written only by the field-duty functions (so nobody can edit or delete their own points or distance) and read only through getFieldRoute/getFieldLive/getFieldTripTrail, which enforce the reporting hierarchy
+const PRIVATE_TYPES = new Set(['AuthorisedSignatory', 'LetterDispatch', 'OfferLetterDispatch', 'OvertimePolicy', 'HrEmailAudit', 'SurveyResponse', 'PulseAccessLog', 'MisInsightState', 'MisConfig', 'LdPolicyAck', 'LdOrgQuiz', 'LdProductQuiz', 'LdCourseQuiz', 'RoasterConfig', 'Feedback360', 'Kiosk', 'KioskLog', 'ApSettings', 'ApCycle', 'ApTemplate', 'ApReview', 'ApMeeting', 'ApGoal', 'ApDevPlan', 'ApAudit', 'ApNotify', 'AssetLetter', 'MrfMaster', 'AttendanceBulkBatch', 'LeaveImportSnapshot', 'CvReviewBatch', 'RecruitmentConfig', 'CandidateIntake', 'FieldTrip', 'FieldTripSnap', 'TrackingDevice', 'FieldDaySummary']);   // policy acknowledgements are permanent records: only the L&D functions may touch them; Feedback360 rows hold the reviewer's id, so they are read only through the 360 functions (anonymity); Kiosk holds kiosk credentials and KioskLog the kiosk audit trail — only /api/kiosk-admin may touch them; FieldTrip holds the GPS trail of field staff — written only by the field-duty functions (so nobody can edit or delete their own points or distance) and read only through getFieldRoute/getFieldLive/getFieldTripTrail, which enforce the reporting hierarchy
 router.use('/:type', (req, res, next) => (PRIVATE_TYPES.has(req.params.type) ? res.status(403).json({ error: 'Not available' }) : next()));
 
 // Exit cases are driven by the exit workflow functions (resignation, approvals, clearance, settlement). Writing the record directly
@@ -881,7 +882,7 @@ router.get('/:type', async (req, res) => {
     if (CACHEABLE.has(type)) cacheSet(cacheKey, data);
   }
 
-  if (type === 'Attendance') data = dedupAttendanceRows(data);
+  if (type === 'Attendance') data = await decorateOvertime(dedupAttendanceRows(data));
   data = await filterSensitive(data, cu, type);
   data = await filterMrfRows(data, cu, type);
   res.json(data);
@@ -948,6 +949,7 @@ router.post('/:type/filter', async (req, res) => {
     if (sort)  data = sortRows(data, sort);
     if (limit) data = data.slice(0, parseInt(limit, 10));
   }
+  if (type === 'Attendance') data = await decorateOvertime(data);
   data = await filterSensitive(data, cu, type);
   data = await filterMrfRows(data, cu, type);
   res.json(data);

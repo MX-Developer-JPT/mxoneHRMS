@@ -8,9 +8,11 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Archive, Search, Download, Loader2, Building2, Calendar } from 'lucide-react';
 import { safeDate } from '@/lib/dateUtils';
+import { downloadBase64 } from '@/lib/download';
+import { toast } from 'sonner';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import LeftAttendanceHistory from '@/components/attendance/LeftAttendanceHistory';
 import { deriveOverallExitStatus, OVERALL_STATUS_COLORS } from '@/lib/exitStatus';
-
-const LEFT_STATUSES = ['resigned', 'terminated', 'retired'];
 
 const REASON_MAP = {
   better_opportunity: 'Better Opportunity', higher_education: 'Higher Education',
@@ -28,28 +30,31 @@ export default function LeftEmployees() {
   const [deptFilter, setDeptFilter] = useState('all');
   const [reasonFilter, setReasonFilter] = useState('all');
   const [exporting, setExporting] = useState(false);
+  const [exportingAtt, setExportingAtt] = useState(false);
+  const [error, setError] = useState('');
+  const [attendanceOf, setAttendanceOf] = useState(null);
 
   useEffect(() => { load(); }, []);
 
   const load = async () => {
-    setLoading(true);
+    setLoading(true); setError('');
     try {
-      const [empRows, usersRes, exits] = await Promise.all([
-        base44.entities.Employee.list('-updated_date', 1000),
-        base44.functions.invoke('getAllUsers', {}),
-        base44.entities.Exit.list('-created_date', 1000),
-      ]);
-      const users = usersRes?.data?.users || usersRes?.users || [];
-      const leftEmps = (empRows || []).filter(e => LEFT_STATUSES.includes(e.status));
-      const enriched = leftEmps.map(emp => {
-        const user = users.find(u => u.id === emp.user_id);
-        const exit = exits.find(x => x.user_id === emp.user_id && x.status === 'completed')
-          || exits.filter(x => x.user_id === emp.user_id).sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
-        return { ...emp, user, exit };
-      });
-      setRows(enriched);
-    } catch (e) { console.error(e); }
+      const res = await base44.functions.invoke('le_list', {});
+      const list = (res?.data || res)?.employees || [];
+      setRows(list.map(r => ({ ...r, id: r.employee_id, user: { full_name: r.name } })));
+    } catch (e) { setError(e.message || 'Could not load left employees'); }
     setLoading(false);
+  };
+
+  const downloadAttendance = async () => {
+    setExportingAtt(true);
+    try {
+      const res = await base44.functions.invoke('le_export', { user_ids: filtered.map(r => r.user_id) });
+      const d = res?.data || res;
+      downloadBase64(d.base64, d.filename);
+      toast.success(`Attendance of ${filtered.length} employee(s) downloaded`);
+    } catch (e) { toast.error(e.message || 'Download failed'); }
+    setExportingAtt(false);
   };
 
   const departments = useMemo(() => Array.from(new Set(rows.map(r => r.department).filter(Boolean))).sort(), [rows]);
@@ -90,8 +95,8 @@ export default function LeftEmployees() {
       for (const r of filtered) {
         ws.addRow({
           name: r.user?.full_name || '', code: r.employee_code || '', dept: r.department || '',
-          desig: r.designation || '', doj: r.date_of_joining || '', resign: r.exit?.resignation_date || '',
-          lwd: r.exit?.last_working_date || r.exit_date || '', exitType: r.exit?.exit_type || '',
+          desig: r.designation || '', doj: r.date_of_joining || '', resign: r.resignation_date || '',
+          lwd: r.last_working_date || '', exitType: r.exit_type || '',
           reason: REASON_MAP[r.exit?.reason_category] || r.exit?.reason_category || '',
           clearance: r.exit ? deriveOverallExitStatus(r.exit) : '',
         });
@@ -101,7 +106,7 @@ export default function LeftEmployees() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = 'Left_Employees.xlsx'; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (e) { console.error(e); }
+    } catch (e) { toast.error(e.message || 'Export failed'); }
     setExporting(false);
   };
 
@@ -111,11 +116,17 @@ export default function LeftEmployees() {
     <div className="p-4 md:p-6 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold flex items-center gap-2"><Archive className="w-6 h-6 text-gray-600" />Left Employees</h1>
-        <Button variant="outline" onClick={handleExport} disabled={exporting || !filtered.length}>
-          {exporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}Export
-        </Button>
+        <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" onClick={downloadAttendance} disabled={exportingAtt || !filtered.length}>
+            {exportingAtt ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Calendar className="w-4 h-4 mr-2" />}Attendance (Excel)
+          </Button>
+          <Button variant="outline" onClick={handleExport} disabled={exporting || !filtered.length}>
+            {exporting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}Export list
+          </Button>
+        </div>
       </div>
-      <p className="text-sm text-gray-500">Archive of employees whose exit is fully complete. All historical HRMS records — attendance, leave, payroll, documents, and exit/clearance history — are permanently retained and remain viewable here.</p>
+      {error && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3 flex items-center justify-between gap-3"><span>{error}</span><Button size="sm" variant="outline" onClick={load}>Try again</Button></div>}
+      <p className="text-sm text-gray-500">{rows.length} employee(s) marked as left (resigned, terminated or retired). All historical HRMS records — attendance, leave, payroll, documents, and exit/clearance history — are permanently retained and remain viewable here.</p>
 
       <div className="flex flex-wrap gap-3">
         <div className="relative flex-1 min-w-[220px]">
@@ -150,6 +161,7 @@ export default function LeftEmployees() {
                 <th className="px-3 py-2 text-left">Last Working Day</th>
                 <th className="px-3 py-2 text-left">Exit Reason</th>
                 <th className="px-3 py-2 text-left">Clearance / F&F Status</th>
+                <th className="px-3 py-2 text-left">Attendance</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -161,23 +173,33 @@ export default function LeftEmployees() {
                   </td>
                   <td className="px-3 py-2.5 text-gray-600"><Building2 className="w-3.5 h-3.5 inline mr-1 text-gray-400" />{r.department || '—'}</td>
                   <td className="px-3 py-2.5 text-gray-600">{r.designation || '—'}</td>
-                  <td className="px-3 py-2.5 text-gray-600">{r.exit?.resignation_date ? safeDate(r.exit.resignation_date, 'dd MMM yyyy') : '—'}</td>
-                  <td className="px-3 py-2.5 text-gray-600">{(r.exit?.last_working_date || r.exit_date) ? safeDate(r.exit?.last_working_date || r.exit_date, 'dd MMM yyyy') : '—'}</td>
-                  <td className="px-3 py-2.5 text-gray-600">{REASON_MAP[r.exit?.reason_category] || '—'}</td>
+                  <td className="px-3 py-2.5 text-gray-600">{r.resignation_date ? safeDate(r.resignation_date, 'dd MMM yyyy') : '—'}</td>
+                  <td className="px-3 py-2.5 text-gray-600">{r.last_working_date ? safeDate(r.last_working_date, 'dd MMM yyyy') : '—'}</td>
+                  <td className="px-3 py-2.5 text-gray-600">{REASON_MAP[r.exit?.reason_category] || r.reason || <span className="capitalize">{r.exit_type || '—'}</span>}</td>
                   <td className="px-3 py-2.5">
                     {r.exit ? (
                       <Badge className={OVERALL_STATUS_COLORS[deriveOverallExitStatus(r.exit)] || 'bg-gray-100 text-gray-600'}>{deriveOverallExitStatus(r.exit)}</Badge>
-                    ) : <span className="text-gray-300">—</span>}
+                    ) : <span className="text-gray-400 text-xs">No exit case</span>}
+                  </td>
+                  <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                    <Button size="sm" variant="outline" onClick={() => setAttendanceOf(r)}><Calendar className="w-3.5 h-3.5 mr-1.5" />History ({r.attendance_days})</Button>
                   </td>
                 </tr>
               ))}
               {!filtered.length && (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-400">No left employees match these filters</td></tr>
+                <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-400">No left employees match these filters</td></tr>
               )}
             </tbody>
           </table>
         </CardContent>
       </Card>
+
+      <Dialog open={!!attendanceOf} onOpenChange={(o) => !o && setAttendanceOf(null)}>
+        <DialogContent className="max-w-3xl max-h-[92vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Attendance history · {attendanceOf?.name} <span className="text-sm font-normal text-gray-400">{attendanceOf?.employee_code}</span></DialogTitle></DialogHeader>
+          {attendanceOf && <LeftAttendanceHistory userId={attendanceOf.user_id} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 // Salary revision (PF rules change) — pure helpers: read the HR sheet, do the
 // CTC maths, and build the per-employee letter / email. No DB or HTTP here so
 // it can be unit-tested; routes/salaryRevision.js does the I/O.
+import { resolveSigner, signatoryNode } from './signatory.js';
 import XLSX from 'xlsx';
 import officeCrypto from 'officecrypto-tool';
 
@@ -195,9 +196,10 @@ export function buildLetterDocDef({ emp, previous, revised, batch, assets }) {
   const P = (text, extra = {}) => ({ text, margin: [0, 0, 0, 5], alignment: 'justify', ...extra });
   const signoff = [
     { text: 'For Maxvolt Energy Industries Limited', bold: true, margin: [0, 8, 0, 0] },
-    { text: batch.signatory || 'Human Resources', margin: [0, 0, 0, 0] },
   ];
-  if (assets.stamp) signoff.push({ image: 'stamp', width: 100, margin: [0, -55, 0, -60], opacity: 0.85 });
+  // stamp, signature, then the signatory's name and designation underneath so nothing covers them
+  const signer = resolveSigner(assets.signatories || [], { name: batch.signatory && batch.signatory !== 'Human Resources' ? batch.signatory : '', role: 'Human Resources' });
+  signoff.push(signatoryNode(signer, { stamp: assets.stamp || '', company: false, margin: [0, 2, 0, 0] }));
 
   const content = [
     { columns: [{ text: `Ref: ${letterRef(emp.code, batch.letter_date)}`, fontSize: 9.5 }, { text: `Date: ${longDate(batch.letter_date)}`, fontSize: 9.5, alignment: 'right' }], margin: [0, 0, 0, 10] },

@@ -18,6 +18,7 @@ import { one, all, run, withTransaction } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { sendEmail } from '../utils/email.js';
 import { renderPdf, getLetterheadBgDataUrl, getStampDataUrl, LETTERHEAD_MARGINS } from './functions.js';
+import { listSignatories } from '../utils/signatoryStore.js';
 import { cacheInvalidate } from './entities.js';
 import {
   parseRevisionWorkbook, computeDiff, rowWarnings, namesAgree, pickEmployee,
@@ -107,9 +108,9 @@ function batchSummary(b, st) {
   };
 }
 
-const assets = () => ({ letterhead: getLetterheadBgDataUrl(), stamp: getStampDataUrl(), marginTop: LETTERHEAD_MARGINS.top, marginBottom: LETTERHEAD_MARGINS.bottom });
+const assets = async () => ({ signatories: await listSignatories(), letterhead: getLetterheadBgDataUrl(), stamp: getStampDataUrl(), marginTop: LETTERHEAD_MARGINS.top, marginBottom: LETTERHEAD_MARGINS.bottom });
 const empOf = (r) => ({ code: r.code, name: r.name, designation: r.designation, department: r.department });
-const letterFor = (b, r) => renderPdf(buildLetterDocDef({ emp: empOf(r), previous: r.previous, revised: r.revised, batch: b, assets: assets() }));
+const letterFor = async (b, r) => renderPdf(buildLetterDocDef({ emp: empOf(r), previous: r.previous, revised: r.revised, batch: b, assets: await assets() }));
 const safeName = (s) => String(s || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
 const letterFilename = (r) => `${safeName(r.code)}_${safeName(r.name)}_Salary_Revision_Letter.pdf`;
 

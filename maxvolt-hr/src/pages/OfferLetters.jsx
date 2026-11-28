@@ -18,53 +18,13 @@ import {
 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import OfferBuilder from '@/components/offers/OfferBuilder';
 import { openPdfBlob } from '@/utils/letterhead';
+import NewOfferDialog from '@/components/offers/NewOfferDialog';
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
 function fmt(n) { return Number(n || 0).toLocaleString('en-IN'); }
-
-// PF applies to ALL employees (capped at ₹25,000 wage).
-// ESI applies when basic ≤ ₹21,000, calculated on basic salary.
-function calcSalary(annualCTC, medicalContrib = 0) {
-  if (!annualCTC || annualCTC <= 0) return null;
-  const PF_CEIL = 25000, ESI_CEIL = 21000;
-  const monthlyTotal = annualCTC / 12;
-  const basic  = Math.round(monthlyTotal * 0.5);
-  const hra    = Math.round(basic * 0.4);
-  const pfBase = Math.min(basic, PF_CEIL);
-  const pfEmp  = Math.round(pfBase * 0.12);
-  const pfEmpr = Math.round(pfBase * 0.13);
-  const isESI  = basic <= ESI_CEIL;
-  const esiEmp  = isESI ? Math.round(basic * 0.0075) : 0;
-  const esiEmpr = isESI ? Math.round(basic * 0.0325) : 0;
-  let bonus, bonusType;
-  if (annualCTC <= 1000000) { bonus = Math.round(basic * 0.0833); bonusType = 'Bonus (8.33% of Basic)'; }
-  else { const vp = annualCTC <= 1500000 ? 0.05 : annualCTC <= 2000000 ? 0.08 : annualCTC <= 2500000 ? 0.12 : 0.15; bonus = Math.round(annualCTC * vp / 12); bonusType = `VPP (${Math.round(vp * 100)}% of CTC)`; }
-  const contrib = pfEmpr + esiEmpr + bonus + medicalContrib;
-  const gross   = Math.round(monthlyTotal - contrib);
-  const conv    = Math.max(gross - basic - hra, 0);
-  const totalDed = pfEmp + esiEmp;
-  const net     = gross - totalDed;
-  const m       = Math.round(monthlyTotal);
-  return {
-    monthly_ctc: m, annual_ctc: annualCTC,
-    basic_monthly: basic,  basic_annual: basic * 12,
-    hra_monthly: hra,      hra_annual: hra * 12,
-    conveyance_monthly: conv, conveyance_annual: conv * 12,
-    gross_monthly: gross,  gross_annual: gross * 12,
-    pf_emp_monthly: pfEmp,  pf_emp_annual: pfEmp * 12,
-    esi_emp_monthly: esiEmp, esi_emp_annual: esiEmp * 12,
-    net_deduction_monthly: totalDed, net_deduction_annual: totalDed * 12,
-    net_monthly: net,      net_annual: net * 12,
-    pf_employer_monthly: pfEmpr,  pf_employer_annual: pfEmpr * 12,
-    esi_employer_monthly: esiEmpr, esi_employer_annual: esiEmpr * 12,
-    medical_monthly: medicalContrib, medical_annual: medicalContrib * 12,
-    bonus_monthly: bonus,  bonus_annual: bonus * 12, bonusType,
-    contribution_monthly: contrib, contribution_annual: contrib * 12,
-    isESI,
-  };
-}
 
 const STATUS_CONFIG = {
   offered:        { label: 'Sent',         color: 'bg-teal-100 text-teal-800',      icon: Send },
@@ -182,313 +142,6 @@ function CandidateDocReviewDialog({ candidate, onClose, onRefresh }) {
   );
 }
 
-function ResendOfferDialog({ candidate, departments = [], onClose, onRefresh }) {
-  const [form, setForm] = useState({
-    joining_date: candidate?.joining_date || new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-    designation: candidate?.designation || candidate?.position_applied || '',
-    department: candidate?.department || '',
-    location: candidate?.location || 'Ghaziabad, Uttar Pradesh',
-    reporting_to: candidate?.reporting_to || '',
-    annual_ctc: candidate?.offer_ctc_annual || candidate?.expected_ctc || 0,
-    probation_months: candidate?.probation_months || 6,
-    offer_valid_days: 7,
-    medical_contribution: 0,
-    notes: '',
-  });
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [acceptLink, setAcceptLink] = useState('');
-  // The manpower requisition this candidate was hired against: fills the offer and shows the approved CTC range.
-  const [mrfReq, setMrfReq] = useState(null);
-  useEffect(() => {
-    const rid = candidate?.requisition_id || candidate?.job_id;
-    if (!rid) return undefined;
-    let live = true;
-    base44.entities.JobRequisition.get(rid).then((r) => {
-      if (!live || !r || r.mrf_version !== 2) return;
-      setMrfReq(r);
-      setForm((f) => ({
-        ...f,
-        designation: candidate?.designation || r.designation || f.designation,
-        department: candidate?.department || r.department || f.department,
-        location: candidate?.location || r.work_location || r.location || f.location,
-        reporting_to: candidate?.reporting_to || r.reports_to_name || r.hiring_manager_name || f.reporting_to,
-      }));
-    }).catch(() => {});
-    return () => { live = false; };
-  }, [candidate?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [previewing, setPreviewing] = useState(false);
-  const [deptOpen, setDeptOpen] = useState(false);
-  const [overrideEnabled, setOverrideEnabled] = useState(false);
-  const [override, setOverride] = useState({ basic: '', hra: '', conveyance: '' });
-
-  const autoSal = calcSalary(Number(form.annual_ctc) || 0, Number(form.medical_contribution) || 0);
-
-  // When override is enabled, use override values (fall back to auto if blank)
-  const sal = overrideEnabled && autoSal
-    ? (() => {
-        const basic  = Number(override.basic)      || autoSal.basic_monthly;
-        const hra    = Number(override.hra)         || autoSal.hra_monthly;
-        const conv   = Number(override.conveyance)  || autoSal.conveyance_monthly;
-        const pfBase = Math.min(basic, 25000);
-        const pfEmp  = Math.round(pfBase * 0.12);
-        const pfEmpr = Math.round(pfBase * 0.13);
-        const isESI  = basic <= 21000;
-        const esiEmp  = isESI ? Math.round(basic * 0.0075) : 0;
-        const esiEmpr = isESI ? Math.round(basic * 0.0325) : 0;
-        const gross  = basic + hra + conv;
-        const net    = gross - pfEmp - esiEmp;
-        const medM   = Number(form.medical_contribution) || 0;
-        const bonus  = autoSal.bonus_monthly;
-        const contrib = pfEmpr + esiEmpr + bonus + medM;
-        const annualCTC = Number(form.annual_ctc) || 0;
-        return {
-          ...autoSal,
-          basic_monthly: basic,   basic_annual: basic * 12,
-          hra_monthly: hra,       hra_annual: hra * 12,
-          conveyance_monthly: conv, conveyance_annual: conv * 12,
-          gross_monthly: gross,   gross_annual: gross * 12,
-          pf_emp_monthly: pfEmp,  pf_emp_annual: pfEmp * 12,
-          esi_emp_monthly: esiEmp, esi_emp_annual: esiEmp * 12,
-          pf_employer_monthly: pfEmpr, pf_employer_annual: pfEmpr * 12,
-          esi_employer_monthly: esiEmpr, esi_employer_annual: esiEmpr * 12,
-          net_monthly: net,       net_annual: net * 12,
-          contribution_monthly: contrib, contribution_annual: contrib * 12,
-          annual_ctc: annualCTC,  monthly_ctc: Math.round(annualCTC / 12),
-          isESI,
-        };
-      })()
-    : autoSal;
-
-  const salaryOverrides = overrideEnabled
-    ? { basic: Number(override.basic) || undefined, hra: Number(override.hra) || undefined, conveyance: Number(override.conveyance) || undefined }
-    : undefined;
-
-  const setF = (k, v) => setForm(p => ({ ...p, [k]: v }));
-
-  const handlePreview = async () => {
-    setPreviewing(true);
-    try {
-      // previewOfferLetterPdf returns the exact same PDF sendOfferLetter
-      // attaches (same buildOfferLetterPdf call, same computeOfferSalary
-      // math) and has no side effects — unlike the old generateOfferLetter,
-      // which silently flipped the candidate's status to "offered" on every
-      // preview click.
-      const res = await base44.functions.invoke('previewOfferLetterPdf', {
-        candidate_id: candidate.id,
-        joining_date: form.joining_date,
-        designation: form.designation,
-        department: form.department,
-        location: form.location,
-        reporting_to: form.reporting_to,
-        annual_ctc: Number(form.annual_ctc),
-        probation_months: Number(form.probation_months),
-        offer_valid_days: Number(form.offer_valid_days),
-        medical_contribution: Number(form.medical_contribution) || 0,
-        salary_overrides: salaryOverrides,
-      });
-      if (res.data?.success) {
-        openPdfBlob(res.data.base64, res.data.filename);
-      } else toast.error(res.data?.error || 'Preview failed');
-    } catch (e) { toast.error(e.message); }
-    setPreviewing(false);
-  };
-
-  const handleSend = async () => {
-    setSending(true);
-    try {
-      const res = await base44.functions.invoke('sendOfferLetter', {
-        candidate_id: candidate.id,
-        joining_date: form.joining_date,
-        designation: form.designation,
-        department: form.department,
-        location: form.location,
-        reporting_to: form.reporting_to,
-        annual_ctc: Number(form.annual_ctc),
-        probation_months: Number(form.probation_months),
-        offer_valid_days: Number(form.offer_valid_days),
-        medical_contribution: Number(form.medical_contribution) || 0,
-        notes: form.notes,
-        salary_overrides: salaryOverrides,
-      });
-      if (res.data?.success) {
-        setSent(true);
-        setAcceptLink(res.data.accept_link || '');
-        toast.success('Offer letter sent to ' + candidate.email);
-        onRefresh();
-      } else toast.error(res.data?.error || 'Failed to send');
-    } catch (e) { toast.error(e.message); }
-    setSending(false);
-  };
-
-  if (sent) return (
-    <div className="text-center py-6 space-y-4">
-      <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto">
-        <CheckCircle2 className="w-8 h-8 text-green-600" />
-      </div>
-      <h3 className="font-semibold text-lg">Offer Letter Sent!</h3>
-      <p className="text-sm text-gray-500">Sent to <strong>{candidate.email}</strong></p>
-      {acceptLink && (
-        <div className="bg-gray-50 rounded-lg p-3 text-left">
-          <p className="text-xs text-gray-500 mb-1">Candidate acceptance link:</p>
-          <div className="flex items-center gap-2">
-            <code className="text-xs text-blue-700 flex-1 truncate">{acceptLink}</code>
-            <button onClick={() => { navigator.clipboard.writeText(acceptLink); toast.success('Copied!'); }}
-              className="p-1 hover:bg-gray-200 rounded">
-              <Copy className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-      )}
-      <Button onClick={onClose} variant="outline">Close</Button>
-    </div>
-  );
-
-  return (
-    <div className="space-y-4 max-h-[78vh] overflow-y-auto pr-1">
-      <p className="text-sm text-gray-500">
-        {candidate.status === 'offered' ? 'Resend' : 'Send'} offer letter to{' '}
-        <strong>{candidate.full_name}</strong> ({candidate.email})
-      </p>
-
-      {mrfReq && (() => {
-        const annual = (n) => (mrfReq.ctc_frequency === 'monthly' ? Number(n) * 12 : Number(n));
-        const lo = mrfReq.ctc_min != null ? annual(mrfReq.ctc_min) : null; const hi = mrfReq.ctc_max != null ? annual(mrfReq.ctc_max) : null;
-        const ctc = Number(form.annual_ctc) || 0;
-        const over = hi != null && ctc > hi; const under = lo != null && ctc > 0 && ctc < lo;
-        return (
-          <div className={`rounded-md border p-2.5 text-xs ${over ? 'border-red-300 bg-red-50 text-red-800' : 'border-blue-200 bg-blue-50 text-blue-900'}`}>
-            Hiring against <b>{mrfReq.requisition_id}</b> — {mrfReq.designation}, {mrfReq.department}. Hiring Manager: {mrfReq.hiring_manager_name}.
-            {lo != null || hi != null ? <> Approved CTC range: <b>₹{(lo ?? 0).toLocaleString('en-IN')} – ₹{(hi ?? lo ?? 0).toLocaleString('en-IN')}</b> a year.</> : ' No CTC range was set on the requisition.'}
-            {over && <> <b>This offer is above the approved range</b> — get the Hiring Manager / management agreement before sending.</>}{under && <> This offer is below the approved range.</>}
-          </div>
-        );
-      })()}
-      <div className="grid md:grid-cols-2 gap-3">
-        {[
-          ['Joining Date *', 'joining_date', 'date'],
-          ['Probation (months)', 'probation_months', 'number'],
-          ['Designation', 'designation', 'text'],
-          ['Work Location', 'location', 'text'],
-          ['Reporting To', 'reporting_to', 'text'],
-          ['Annual CTC (₹)', 'annual_ctc', 'number'],
-          ['Offer Valid (days)', 'offer_valid_days', 'number'],
-          ['Medical Contribution (₹/month)', 'medical_contribution', 'number'],
-        ].map(([label, key, type]) => (
-          <div key={key}>
-            <Label className="text-xs">{label}</Label>
-            <Input type={type} value={form[key]} onChange={e => setF(key, e.target.value)}
-              placeholder={key === 'reporting_to' ? 'Manager name' : key === 'medical_contribution' ? '0' : ''} />
-          </div>
-        ))}
-
-        {/* Department combobox */}
-        <div>
-          <Label className="text-xs">Department</Label>
-          <Popover open={deptOpen} onOpenChange={setDeptOpen}>
-            <PopoverTrigger asChild>
-              <button type="button"
-                className="w-full flex items-center justify-between border rounded-md px-3 h-9 text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-ring">
-                <span className={form.department ? '' : 'text-muted-foreground'}>{form.department || 'Select department…'}</span>
-                <ChevronsUpDown className="w-3.5 h-3.5 text-muted-foreground ml-1 shrink-0" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="p-0 w-72" align="start">
-              <Command>
-                <CommandInput placeholder="Search or type department…" value={form.department.includes(departments.find(d=>d===form.department)?'':form.department)?form.department:''} onValueChange={v => setF('department', v)} />
-                <CommandList>
-                  <CommandEmpty>
-                    <div className="text-xs text-gray-500 px-2 py-1">No match — using typed value</div>
-                  </CommandEmpty>
-                  <CommandGroup>
-                    {departments.map(d => (
-                      <CommandItem key={d} value={d} onSelect={() => { setF('department', d); setDeptOpen(false); }}>
-                        <Check className={`w-3.5 h-3.5 mr-2 ${form.department === d ? 'opacity-100' : 'opacity-0'}`} />
-                        {d}
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
-                </CommandList>
-              </Command>
-            </PopoverContent>
-          </Popover>
-        </div>
-
-        <div className="md:col-span-2">
-          <Label className="text-xs">Additional Notes (optional)</Label>
-          <Textarea value={form.notes} onChange={e => setF('notes', e.target.value)} rows={2} />
-        </div>
-      </div>
-
-      {/* Salary preview with optional override */}
-      {Number(form.annual_ctc) > 0 && sal && (
-        <div className="border rounded-lg overflow-x-auto">
-          <div className="bg-gray-50 px-3 py-2 flex items-center justify-between">
-            <span className="text-xs font-semibold text-gray-600">Salary Breakdown</span>
-            <button type="button" onClick={() => setOverrideEnabled(v => !v)}
-              className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded border transition-colors ${overrideEnabled ? 'bg-orange-50 border-orange-300 text-orange-700' : 'bg-white border-gray-200 text-gray-500 hover:text-gray-700'}`}>
-              <Pencil className="w-3 h-3" />
-              {overrideEnabled ? 'Editing components' : 'Override components'}
-            </button>
-          </div>
-
-          {overrideEnabled && (
-            <div className="bg-orange-50 border-b border-orange-200 px-3 py-2 grid grid-cols-3 gap-2">
-              {[['Basic (₹/mo)', 'basic', sal.basic_monthly], ['HRA (₹/mo)', 'hra', sal.hra_monthly], ['Conveyance (₹/mo)', 'conveyance', sal.conveyance_monthly]].map(([label, key, placeholder]) => (
-                <div key={key}>
-                  <Label className="text-xs text-orange-700">{label}</Label>
-                  <Input type="number" placeholder={String(placeholder)} value={override[key]}
-                    onChange={e => setOverride(v => ({ ...v, [key]: e.target.value }))}
-                    className="h-7 text-xs" />
-                </div>
-              ))}
-              <p className="col-span-3 text-xs text-orange-600">Leave blank to use auto-calculated value. Net take-home and CTC will update automatically.</p>
-            </div>
-          )}
-
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="text-left px-3 py-1.5 border-b">Component</th>
-                <th className="text-right px-3 py-1.5 border-b">Annual (₹)</th>
-                <th className="text-right px-3 py-1.5 border-b">Monthly (₹)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                [overrideEnabled ? 'Basic (override)' : 'Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly],
-                [overrideEnabled ? 'HRA (override)' : 'HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly],
-                [overrideEnabled ? 'Conveyance (override)' : 'Conveyance (Balance)', sal.conveyance_annual, sal.conveyance_monthly],
-              ].map(([l, a, m]) => (
-                <tr key={l} className="border-b"><td className="px-3 py-1">{l}</td><td className="px-3 py-1 text-right">{fmt(a)}</td><td className="px-3 py-1 text-right">{fmt(m)}</td></tr>
-              ))}
-              <tr className="bg-blue-50 font-semibold border-b"><td className="px-3 py-1.5">Total Gross (A)</td><td className="px-3 py-1.5 text-right">{fmt(sal.gross_annual)}</td><td className="px-3 py-1.5 text-right">{fmt(sal.gross_monthly)}</td></tr>
-              <tr className="border-b text-gray-500"><td className="px-3 py-1">PF Employee 12% (deduction)</td><td className="px-3 py-1 text-right">-{fmt(sal.pf_emp_annual)}</td><td className="px-3 py-1 text-right">-{fmt(sal.pf_emp_monthly)}</td></tr>
-              {sal.isESI && <tr className="border-b text-gray-500"><td className="px-3 py-1">ESI Employee 0.75% on Basic (deduction)</td><td className="px-3 py-1 text-right">-{fmt(sal.esi_emp_annual)}</td><td className="px-3 py-1 text-right">-{fmt(sal.esi_emp_monthly)}</td></tr>}
-              <tr className="bg-green-50 font-semibold border-b"><td className="px-3 py-1.5">Net Take-Home</td><td className="px-3 py-1.5 text-right">{fmt(sal.net_annual)}</td><td className="px-3 py-1.5 text-right">{fmt(sal.net_monthly)}</td></tr>
-              <tr className="bg-orange-50 font-bold"><td className="px-3 py-1.5">Annual CTC</td><td className="px-3 py-1.5 text-right">{fmt(sal.annual_ctc)}</td><td className="px-3 py-1.5 text-right">{fmt(sal.monthly_ctc)}</td></tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <div className="flex gap-3 pt-1">
-        <Button variant="outline" onClick={handlePreview} disabled={previewing} className="flex-1">
-          {previewing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <FileText className="w-4 h-4 mr-2" />}
-          Preview
-        </Button>
-        <Button onClick={handleSend} disabled={sending || !form.joining_date} className="flex-1 bg-green-600 hover:bg-green-700">
-          {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-          Send to Candidate
-        </Button>
-      </div>
-      <p className="text-xs text-gray-400 text-center">
-        Sends offer + consent form to {candidate.email} with a digital acceptance link
-      </p>
-    </div>
-  );
-}
-
 export default function OfferLetters() {
   const [candidates, setCandidates] = useState([]);
   const [departments, setDepartments] = useState([]);
@@ -496,6 +149,9 @@ export default function OfferLetters() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [dialogCandidate, setDialogCandidate] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [role, setRole] = useState('');
+  useEffect(() => { base44.auth.me().then(u => setRole(u?.custom_role || u?.role || '')).catch(() => {}); }, []);
   const [docDialogCandidate, setDocDialogCandidate] = useState(null);
   const [invitingId, setInvitingId] = useState(null);
   const [sendingDocReqId, setSendingDocReqId] = useState(null);
@@ -615,9 +271,14 @@ export default function OfferLetters() {
             </h1>
             <p className="text-gray-500 mt-1">Manage, track, and send offer letters to selected candidates</p>
           </div>
-          <Button onClick={loadData} variant="outline" size="sm" className="gap-2">
-            <RefreshCw className="w-4 h-4" /> Refresh
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={() => setCreating(true)} size="sm" className="gap-2 bg-green-600 hover:bg-green-700 text-white">
+              <FileText className="w-4 h-4" /> Create offer letter
+            </Button>
+            <Button onClick={loadData} variant="outline" size="sm" className="gap-2">
+              <RefreshCw className="w-4 h-4" /> Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Stats */}
@@ -776,20 +437,17 @@ export default function OfferLetters() {
                             )
                           )}
 
-                          {/* Send / Resend offer — disabled until every mandatory
-                              document is verified; the server enforces this too
-                              (sendOfferLetter), this is just the visible reason why. */}
+                          {/* Opens the offer builder. Sending before the documents are verified needs an HR/admin
+                              reason, enforced by the server (sendOfferLetter). */}
                           <Button
                             size="sm"
                             variant={c.status === 'offered' ? 'outline' : 'default'}
                             onClick={() => setDialogCandidate(c)}
-                            disabled={c.status !== 'offered' && c.doc_collection_status !== 'verified'}
-                            title={c.status !== 'offered' && c.doc_collection_status !== 'verified' ? 'All mandatory documents must be verified before sending the offer letter' : undefined}
                             className={c.status === 'offered' ? 'border-teal-300 text-teal-700 hover:bg-teal-50' : 'bg-green-600 hover:bg-green-700 text-white'}
                           >
                             {c.status === 'offered'
                               ? <><RefreshCw className="w-3 h-3 mr-1" /> Resend Offer</>
-                              : <><Send className="w-3 h-3 mr-1" /> Send Offer</>
+                              : <><Send className="w-3 h-3 mr-1" /> Offer Letter</>
                             }
                           </Button>
 
@@ -852,23 +510,28 @@ export default function OfferLetters() {
 
       {/* Send/Resend Dialog */}
       <Dialog open={!!dialogCandidate} onOpenChange={open => { if (!open) setDialogCandidate(null); }}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileCheck className="w-5 h-5 text-green-600" />
-              {dialogCandidate?.status === 'offered' ? 'Resend' : 'Send'} Offer Letter — {dialogCandidate?.full_name}
+              Offer Letter — {dialogCandidate?.full_name}
             </DialogTitle>
           </DialogHeader>
           {dialogCandidate && (
-            <ResendOfferDialog
+            <OfferBuilder
+              key={dialogCandidate.id}
               candidate={dialogCandidate}
               departments={departments}
+              canOverride={['hr', 'admin'].includes(role)}
               onClose={() => setDialogCandidate(null)}
               onRefresh={loadData}
             />
           )}
         </DialogContent>
       </Dialog>
+
+      <NewOfferDialog open={creating} candidates={candidates} onClose={() => setCreating(false)}
+        onPick={(c) => { setCreating(false); setDialogCandidate(c); loadData(); }} />
 
       {/* Document Review Dialog */}
       <Dialog open={!!docDialogCandidate} onOpenChange={open => { if (!open) setDocDialogCandidate(null); }}>

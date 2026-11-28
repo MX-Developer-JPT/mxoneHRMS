@@ -103,7 +103,7 @@ export async function buildPdf(model, withLetterhead, chrome) {
   }
   const half = Math.ceil(model.guidelines.length / 2);
   const gl = (g, i) => ({ stack: [{ text: `${i + 1}. ${g.title}`, bold: true, margin: [0, 2, 0, 0.5] }, { ul: g.points, margin: [8, 0, 0, 1] }] });
-  const stampNode = stamp ? [{ image: 'stamp', width: 50, opacity: 0.85, margin: [0, -6, 0, -8] }] : [];
+  const stampNode = stamp ? [{ image: 'stamp', width: 40, opacity: 0.85, margin: [0, -1, 0, 0] }] : [];
   const sig = chrome.signature?.data_url;
   const content = [
     { text: model.title, fontSize: 15, bold: true, alignment: 'center', margin: [0, 0, 0, 3] },

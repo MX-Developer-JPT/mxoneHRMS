@@ -20,6 +20,7 @@ import BiometricSyncStatus from '@/components/attendance/BiometricSyncStatus';
 import { PlacesMap } from '@/components/maps/GeoMaps';
 import { fenceOf, signedDistanceM } from '@/lib/geofenceShape';
 import { resolveHierarchy } from '@/lib/hierarchy';
+import { rosterFor } from '@/lib/leavers';
 
 const STATUS_COLORS = {
   present: 'bg-green-100 text-green-800 border-green-200',
@@ -183,7 +184,7 @@ export default function AllAttendance() {
         // past a small cap would make the newest-hired employees (sorted
         // last if this ever changed to ascending, or simply pushed out by
         // any future growth past the old 500 cap) disappear from view here.
-        base44.entities.Employee.filter({ status: 'active' }, '-created_date', 5000),
+        base44.entities.Employee.list('-created_date', 5000),
         base44.functions.invoke('getAllUsers', {}),
         base44.functions.invoke('getAllAttendance', { date }),
         base44.entities.Department.list(),
@@ -191,7 +192,8 @@ export default function AllAttendance() {
 
       const users = usersResp.data?.users || [];
       const dayRecords = attendanceResp.data?.records || [];
-      let emps = empRecords.map(e => ({ ...e, _user: users.find(u => u.id === e.user_id) }));
+      // active employees, plus leavers up to and including their last working day
+      let emps = rosterFor(empRecords, date, new Set(dayRecords.map(r => r.user_id))).map(e => ({ ...e, _user: users.find(u => u.id === e.user_id) }));
 
       // Both 'manager' and 'management' default to their own team here —
       // "Team Attendance" means their WHOLE downstream hierarchy (direct +

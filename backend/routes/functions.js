@@ -6,6 +6,13 @@ import { one, all, run, q } from '../db.js';
 import { JWT_SECRET } from './auth.js';
 import { callAI, callAIMessages } from '../utils/ai.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
+import { rosterFor, afterExit, isLeaver, lastWorkingDay } from '../utils/leavers.js';
+import { overtimeForDay, workedFromPunches, otAmount } from '../utils/overtime.js';
+import { resolveSigner, signatoryNode, signatoryHtml, parseSignatoryBlock } from '../utils/signatory.js';
+import { listSignatories } from '../utils/signatoryStore.js';
+import { computeOfferSalary as offerSalaryRules } from '../utils/offerSalary.js';
+import { validEmail } from '../utils/hrMail.js';
+import { loadOvertimeContext, decorateOvertime } from '../utils/overtimeData.js';
 import { buildSessions, punchesOnlyAdded, applyDeclaredStatus, applyHalfDayLeaveStatus, computeStatusFromSessions, closeTrailingOpenSession, getHalfDayOverrideHours, getHalfDayHolidayMap, resolveHalfDayHours, isOvernightShift, shiftEndDateTime, EARLY_MORNING_CUTOFF_HOUR } from './attendancelog.js';
 import { cacheInvalidate, getAnnouncementAudienceUserIds } from './entities.js';
 import { ktSummary, buildAccessChecklist, DOC_TEMPLATES, DOC_TYPES, templatesFor, renderDocTemplate, docGate, exitAnalytics, fnfStatusLabel as fnfStatusLabelOf, clearanceSummary as clearanceSummaryOf, noticeStatus as noticeStatusOf, buildApprovalChain, currentStageOf, STAGE_LABEL, displayStatus, nextExitRef, lastDayFor, needsManagement, noticeDaysFor, evaluateResignation, recoverableShortfall, draftFnF, segregationProblem, closeBlockers, leftStatusFor, isYmd, addDaysYmd, istToday, mergeCfg as mergeExitCfg, EXIT_DEFAULTS } from '../utils/exitPolicy.js';
@@ -155,7 +162,7 @@ function renderPdf(docDef) {
 }
 
 /* ── Shared: parse HTML letter content into pdfmake content nodes ── */
-function htmlLetterToPdfContent(html) {
+function htmlLetterToPdfContent(html, signers = []) {
   const decode = s => s
     .replace(/&ldquo;/g, '“').replace(/&rdquo;/g, '”')
     .replace(/&lsquo;/g, '‘').replace(/&rsquo;/g, '’')
@@ -191,11 +198,22 @@ function htmlLetterToPdfContent(html) {
   };
 
   const nodes = [];
-  let rem = html.replace(/^<div[^>]*>|<\/div>\s*$/gi, '').trim();
+  // drop the outer wrapper <div> only (a letter that is not wrapped must keep its own blocks closed)
+  let rem = html.trim();
+  if (/^<div(?![^>]*class=["']mx-)/i.test(rem)) rem = rem.replace(/^<div[^>]*>/i, '').replace(/<\/div>\s*$/i, '').trim();
 
   while (rem.length > 0) {
     rem = rem.trimStart();
     if (!rem) break;
+
+    // AUTHORISED SIGNATORY block (utils/signatory.js): company line, stamp, signature, name, designation
+    const signBlock = rem.match(/^<div([^>]*class=["']mx-signatory["'][^>]*)>([\s\S]*?)<\/div>/i);
+    if (signBlock) {
+      const { signer, company } = parseSignatoryBlock(signBlock[1], signBlock[2], signers);
+      nodes.push(signatoryNode(signer, { stamp: getStampDataUrl() || '', company }));
+      rem = rem.slice(signBlock[0].length);
+      continue;
+    }
 
     // ANNEXURE BOX — a <div class="mx-annexure-box"> marks a self-contained
     // "closed box" section (the bordered salary-annexure page). A CSS border
@@ -209,7 +227,7 @@ function htmlLetterToPdfContent(html) {
     // first matching </div> is the real closing tag.
     const box = rem.match(/^<div[^>]*class=["']mx-annexure-box["'][^>]*>([\s\S]*?)<\/div>/i);
     if (box) {
-      const innerNodes = htmlLetterToPdfContent(box[1]);
+      const innerNodes = htmlLetterToPdfContent(box[1], signers);
       nodes.push({
         pageBreak: 'before',
         table: { widths: ['*'], body: [[{ stack: innerNodes, margin: [10, 10, 10, 10] }]] },
@@ -402,7 +420,7 @@ function getStampDataUrl() {
    Limited" / signatory-name text it should overlap, not before. ── */
 function letterSealNode() {
   if (getStampDataUrl()) {
-    return { image: 'stamp', width: 100, margin: [0, -55, 0, -60], opacity: 0.85 };
+    return { image: 'stamp', width: 90, margin: [0, 2, 0, 2], opacity: 0.85 };
   }
   const r = 40, cx = r + 6, cy = r + 6;
   return {
@@ -490,21 +508,12 @@ function calcSalaryBreakdown(annualCTC, medicalContribution = 0, ceilings = {}) 
 async function buildLetterPdf(label, ref, htmlContent, extraImages = {}) {
   const logoDataUrl = getLogoDataUrl();
   const stampDataUrl = getStampDataUrl();
-  const content = htmlLetterToPdfContent(htmlContent);
-  // Every letter through this shared builder should carry the company seal
-  // overlapping its closing signature block — most callers (No Dues
-  // Certificate, Confirmation/Probation letters, and every dynamically
-  // AI/template-composed HR letter from approveAndSendLetter/
-  // saveLetterAsDocument) never include an explicit <img class="mx-seal">
-  // marker in their HTML, so without this they'd render with no stamp at
-  // all. Appending letterSealNode() as the last content node pulls it up
-  // (via its own negative top margin) to overlap whatever the letter's
-  // final line was — which is always the signature block for every letter
-  // built this way — without every caller having to remember to add the
-  // marker themselves. Skipped only when a caller already placed one
-  // explicitly, so it's never double-stamped.
-  if (!/class=["']mx-seal["']/i.test(htmlContent)) {
-    content.push(letterSealNode());
+  const signers = await listSignatories();
+  const content = htmlLetterToPdfContent(htmlContent, signers);
+  // A letter written without its own signatory block (AI drafts, certificates, older saved letters) gets the standard one,
+  // so every letter shows the stamp with the signatory's name and designation.
+  if (!/class=["']mx-(signatory|seal)["']/i.test(htmlContent)) {
+    content.push(signatoryNode(resolveSigner(signers), { stamp: stampDataUrl || '', company: !/For\s+Max\s?volt/i.test(htmlContent) }));
   }
   const { headerFn, footerFn, backgroundFn } = makeLetterheadChrome(logoDataUrl);
 
@@ -561,7 +570,8 @@ function carLeaseCarry(prev) {
   return { car_lease_deduction: prev.car_lease_deduction, car_lease_from: prev.car_lease_from || '', car_lease_to: prev.car_lease_to || '', car_lease_note: prev.car_lease_note || '' };
 }
 
-function buildSalaryStructurePdf({ candidateName, employeeCode, designation, department, dateOfJoining, effectiveFrom, annualCTC, sal }) {
+async function buildSalaryStructurePdf({ candidateName, employeeCode, designation, department, dateOfJoining, effectiveFrom, annualCTC, sal }) {
+  const signer = resolveSigner(await listSignatories(), { role: 'HR Manager' });
   return new Promise((resolve, reject) => {
     try {
       const printer = getPdfPrinter();
@@ -659,7 +669,7 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
 
           {
             columns: [
-              { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'HR Manager', bold:true, fontSize:10 },{ text:'Maxvolt Energy Industries Limited', fontSize:9 }, ...(stampDataUrl ? [{ image:'stamp', width:82, margin:[0,-30,0,0], opacity:0.85 }] : [])] },
+              { width:'45%', ...signatoryNode(signer, { stamp: stampDataUrl || '' }) },
               { width:'*', text:'' },
               { width:'45%', stack:[{ text:'_________________________', fontSize:10 },{ text:'Employee Signature', bold:true, fontSize:10 },{ text:candidateName||'', fontSize:9 }] },
             ],
@@ -679,54 +689,9 @@ function buildSalaryStructurePdf({ candidateName, employeeCode, designation, dep
   });
 }
 
-// ── Shared: canonical offer-letter salary math — single source of truth so
-// previewOfferLetterPdf and sendOfferLetter can never compute different
-// numbers for the same inputs. Deliberately kept as the existing 3-component
-// formula (Basic/HRA/Conveyance, ESI-on-basic) — not touched/extended.
-function computeOfferSalary(annualCTC, medicalContribution = 0, overrides = {}) {
-  const ctc = Number(annualCTC) || 0;
-  const monthlyCTC = ctc / 12;
-  const PF_CEIL = PF_WAGE_CEILING, ESI_CEIL = 21000;
-  const autoBasicM = Math.round(monthlyCTC * 0.5);
-  const basicM  = overrides?.basic ? Number(overrides.basic) : autoBasicM;
-  const autoHraM = Math.round(basicM * 0.4);
-  const hraM    = overrides?.hra ? Number(overrides.hra) : autoHraM;
-  const pfBase       = Math.min(basicM, PF_CEIL);
-  const pfEmpM        = Math.round(pfBase * 0.12);
-  const pfEmployerM   = Math.round(pfBase * 0.13);
-  const isESI         = basicM <= ESI_CEIL;
-  const esiEmpM       = isESI ? Math.round(basicM * 0.0075) : 0;
-  const esiEmployerM  = isESI ? Math.round(basicM * 0.0325) : 0;
-  const medicalM      = Number(medicalContribution) || 0;
-  let bonusM, bonusType;
-  if (ctc <= 1000000) { bonusM = Math.round(basicM * 0.0833); bonusType = 'Bonus (8.33% of Basic)'; }
-  else { const vp = ctc <= 1500000 ? 0.05 : ctc <= 2000000 ? 0.08 : ctc <= 2500000 ? 0.12 : 0.15; bonusM = Math.round(ctc * vp / 12); bonusType = `VPP (${Math.round(vp * 100)}% of CTC)`; }
-  const contribM   = pfEmployerM + esiEmployerM + bonusM + medicalM;
-  const autoGrossM = Math.round(monthlyCTC - contribM);
-  const autoConvM  = Math.max(autoGrossM - basicM - hraM, 0);
-  const convM      = overrides?.conveyance ? Number(overrides.conveyance) : autoConvM;
-  const grossM     = basicM + hraM + convM;
-  const totalDedM  = pfEmpM + esiEmpM;
-  const netM       = grossM - totalDedM;
-
-  return {
-    monthly_ctc: Math.round(monthlyCTC), annual_ctc: ctc,
-    basic_monthly: basicM,        basic_annual: basicM * 12,
-    hra_monthly: hraM,            hra_annual: hraM * 12,
-    conveyance_monthly: convM,    conveyance_annual: convM * 12,
-    gross_monthly: grossM,        gross_annual: grossM * 12,
-    pf_emp_monthly: pfEmpM,       pf_emp_annual: pfEmpM * 12,
-    esi_emp_monthly: esiEmpM,     esi_emp_annual: esiEmpM * 12,
-    pf_employer_monthly: pfEmployerM,   pf_employer_annual: pfEmployerM * 12,
-    esi_employer_monthly: esiEmployerM, esi_employer_annual: esiEmployerM * 12,
-    medical_monthly: medicalM,    medical_annual: medicalM * 12,
-    bonus_monthly: bonusM,        bonus_annual: bonusM * 12, bonusType,
-    contribution_monthly: contribM, contribution_annual: contribM * 12,
-    net_monthly: netM,            net_annual: netM * 12,
-    isESI,
-    usedOverrides: { basic: !!overrides?.basic, hra: !!overrides?.hra, conveyance: !!overrides?.conveyance },
-  };
-}
+// ── Shared: canonical offer-letter salary math (utils/offerSalary.js) with the organisation's PF wage ceiling, so the
+// on-screen breakdown, the preview and the sent letter can never compute different numbers for the same inputs.
+const computeOfferSalary = (annualCTC, medicalContribution = 0, overrides = {}) => offerSalaryRules(annualCTC, medicalContribution, overrides, { pfCeiling: PF_WAGE_CEILING });
 
 // ── Shared: the 3 mandatory pre-offer documents every candidate must submit
 // and have HR-verified before an offer letter can be sent. Stored as
@@ -808,8 +773,16 @@ function buildOfferPdfParams(cand, p) {
   const fmtDate = (d) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
   const jDateStr = jDate ? fmtDate(jDate) : 'As mutually agreed';
   const sal = computeOfferSalary(ctc, Number(medical_contribution) || 0, salary_overrides);
+  const clip = (v, n = 300) => String(v || '').trim().slice(0, n);
   return {
     name, position, department: department_, workLocation,
+    email: cand.email || '', phone: cand.phone || '',
+    employmentType: clip(p.employment_type, 60) || 'Full time', noticeDays: Number(p.notice_period_days) > 0 ? Number(p.notice_period_days) : 30,
+    probationMonths: Number(probation_months) >= 0 ? Number(probation_months) : 6,
+    benefits: String(p.benefits || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 15),
+    otherTerms: String(p.other_terms || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 20),
+    notes: clip(p.notes, 1000), offerRef: clip(p.offer_ref, 60),
+    signatory: { id: p.signatory_id, name: p.signatory_name, designation: p.signatory_designation },
     jDateStr, docDateStr: jDateStr,
     todayStr: fmtDate(new Date()), validTillStr: fmtDate(validTill),
     annualCTC: ctc, sal,
@@ -826,7 +799,8 @@ function buildOfferPdfParams(cand, p) {
 // reference offer letter's clauses verbatim with dynamic fields substituted
 // in; page 2 is the boxed salary break-up table matching the reference's
 // page 2 layout exactly.
-function buildOfferLetterPdf(offer) {
+async function buildOfferLetterPdf(offer) {
+  const signer = resolveSigner(await listSignatories(), { ...offer.signatory, role: 'Manager - HR' });
   return new Promise((resolve, reject) => {
     try {
       const logoDataUrl = getLogoDataUrl();
@@ -852,17 +826,15 @@ function buildOfferLetterPdf(offer) {
         cell(L(annual),  { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
         cell(L(monthly), { bold: true, fillColor: GRAY, alignment: 'right', ...(color ? { color } : {}) }),
       ];
-      const dedRows = [
-        dRow('PF Employee Contribution (12% on Basic, max ₹25,000)', sal.pf_emp_annual, sal.pf_emp_monthly),
-        ...(sal.isESI ? [dRow('ESI Employee Contribution (0.75% on Basic)', sal.esi_emp_annual, sal.esi_emp_monthly)] : []),
-      ];
-      const totalDedAnnual  = sal.pf_emp_annual + sal.esi_emp_annual;
-      const totalDedMonthly = sal.pf_emp_monthly + sal.esi_emp_monthly;
-      const contRows = [
-        dRow('PF Employer Contribution', sal.pf_employer_annual, sal.pf_employer_monthly),
-        ...(sal.isESI ? [dRow('ESI Employer Contribution (3.25% on Basic)', sal.esi_employer_annual, sal.esi_employer_monthly)] : []),
-        ...(sal.medical_monthly > 0 ? [dRow('Medical Contribution', sal.medical_annual, sal.medical_monthly)] : []),
-        dRow(sal.bonusType || 'Bonus / VPP', sal.bonus_annual, sal.bonus_monthly),
+      const salRows = (list) => list.map(([label, annual, monthly]) => dRow(label, annual, monthly));
+      const term = (k, v) => [cell(k, { bold: true }), cell(v)];
+      const terms = [
+        term('Designation', position), term('Department', department), term('Employment type', offer.employmentType),
+        term('Work location', workLocation), term('Reporting manager', reportingTo || 'As assigned'), term('Date of joining', jDateStr),
+        term('Probation period', offer.probationMonths ? `${offer.probationMonths} month(s)` : 'Not applicable'),
+        term('Notice period', `${offer.noticeDays} days`), term('Annual CTC', `INR ${L(annualCTC)}`),
+        term('Monthly gross salary', `INR ${L(sal.gross_monthly)}`),
+        ...(offer.phone || offer.email ? [term('Your contact', [offer.phone, offer.email].filter(Boolean).join('  |  '))] : []),
       ];
 
       const docsList = [
@@ -872,7 +844,6 @@ function buildOfferLetterPdf(offer) {
         'Offer, Appointment & Increment Letters (Past 3)',
         'Proof of work experience – Experience / relieving letter (Past 3)',
         'Last 3 months salary slips & 6 months bank statement.',
-        'Proof of address & ID (Local & Permanent).',
       ];
 
       const docDef = {
@@ -889,7 +860,7 @@ function buildOfferLetterPdf(offer) {
         content: [
           // ── PAGE 1 — letter body ──
           { text: 'OFFER LETTER', bold: true, fontSize: 14, decoration: 'underline', alignment: 'center', margin: [0, 0, 0, 16] },
-          { text: todayStr, margin: [0, 0, 0, 14] },
+          { columns: [{ text: todayStr }, { text: offer.offerRef ? `Ref: ${offer.offerRef}` : '', alignment: 'right' }], margin: [0, 0, 0, 14] },
           { text: [{ text: 'Dear ' }, { text: name, bold: true }, { text: ',' }], margin: [0, 0, 0, 10] },
           { text: 'Congratulation!!', bold: true, margin: [0, 0, 0, 8] },
           { text: [{ text: 'Subject: ', bold: true }, { text: `Offer to the Post of ` }, { text: position, bold: true }, { text: '.' }], margin: [0, 0, 0, 10] },
@@ -913,21 +884,18 @@ function buildOfferLetterPdf(offer) {
             { text: '. Please send a signed copy of this letter indicating your acceptance to join and a resignation acceptance letter from your current employer to our HR.' },
           ], alignment: 'justify', margin: [0, 0, 0, 10] },
           { text: `The joining formalities and induction will be carried out in our ${workLocation} office. Please submit the following documents to HR at the time of your joining:`, alignment: 'justify', margin: [0, 0, 0, 8] },
-          { ul: docsList, margin: [10, 0, 0, 16] },
-          { text: 'We look forward to welcome you aboard. Sincerely,', margin: [0, 0, 0, 18] },
-          { text: '(Confidential)', bold: true, alignment: 'center', margin: [0, 0, 0, 24] },
+          { ul: docsList, margin: [10, 0, 0, 12] },
+          // page 2: the terms, closing and signatures stay together
+          { text: 'Terms of employment', bold: true, margin: [0, 0, 0, 4], pageBreak: 'before' },
+          { table: { widths: ['34%', '*'], body: terms }, layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc', paddingTop: () => 0, paddingBottom: () => 0 }, lineHeight: 1.1, margin: [0, 0, 0, 8] },
+          ...(offer.benefits.length ? [{ text: 'Benefits', bold: true, margin: [0, 2, 0, 3] }, { ul: offer.benefits, margin: [10, 0, 0, 8] }] : []),
+          ...(offer.otherTerms.length ? [{ text: 'Other terms and conditions', bold: true, margin: [0, 2, 0, 3] }, { ul: offer.otherTerms, margin: [10, 0, 0, 8] }] : []),
+          ...(offer.notes ? [{ text: offer.notes, alignment: 'justify', margin: [0, 0, 0, 10] }] : []),
+          { text: 'We look forward to welcome you aboard. Sincerely,', margin: [0, 4, 0, 6] },
           {
+            unbreakable: true,
             columns: [
-              {
-                width: '50%',
-                stack: [
-                  { text: 'For Maxvolt Energy Industries Limited', bold: true, margin: [0, 0, 0, 2] },
-                  ...(stampDataUrl ? [letterSealNode()] : [{ text: '', margin: [0, 34, 0, 0] }]),
-                  { text: 'Manager – HR_______________________', margin: [0, stampDataUrl ? 6 : 34, 0, 2] },
-                  { text: 'Date:', margin: [0, 0, 0, 2] },
-                  { text: 'Signature:' },
-                ],
-              },
+              { width: '50%', ...signatoryNode(signer, { stamp: stampDataUrl || '' }) },
               {
                 width: '50%',
                 stack: [
@@ -971,18 +939,16 @@ function buildOfferLetterPdf(offer) {
                       body: [
                         [hLCell('Salary Head'), hCell('Annually'), hCell('Monthly')],
                         sRow('Earnings'),
-                        dRow('Basic (50% of CTC)', sal.basic_annual, sal.basic_monthly),
-                        dRow('HRA (40% of Basic)', sal.hra_annual, sal.hra_monthly),
-                        dRow('Conveyance Allowance (Balance)', sal.conveyance_annual, sal.conveyance_monthly),
+                        ...salRows(sal.rows.earnings),
                         tRow('Total Gross Salary (A)', sal.gross_annual, sal.gross_monthly),
                         sRow('Deduction'),
-                        ...dedRows,
-                        tRow('Total Deduction (B)', totalDedAnnual, totalDedMonthly),
+                        ...salRows(sal.rows.deductions),
+                        tRow('Total Deduction (B)', sal.deduction_annual, sal.deduction_monthly),
                         tRow('Total Net Salary (A-B)', sal.net_annual, sal.net_monthly),
                         sRow('Contribution'),
-                        ...contRows,
+                        ...salRows(sal.rows.contributions),
                         tRow('Total Contribution (C)', sal.contribution_annual, sal.contribution_monthly),
-                        tRow('Annually CTC (A+C)', annualCTC, annualCTC / 12, BLUE),
+                        tRow('Annually CTC (A+C)', annualCTC, Math.round(annualCTC / 12), BLUE),
                       ],
                     },
                     layout: { hLineWidth: () => 0.5, vLineWidth: () => 0.5, hLineColor: () => '#cccccc', vLineColor: () => '#cccccc' },
@@ -1006,6 +972,26 @@ function buildOfferLetterPdf(offer) {
       doc.end();
     } catch (err) { reject(err); }
   });
+}
+
+// One entry in the candidate's offer letter history: what was generated or sent, to whom, with the exact PDF.
+async function recordOfferVersion({ candidate_id, cand, params, input, pdfBuffer, filename, status, error = '', offerRef = '', cu, overrideReason = '' }) {
+  try {
+    const id = uuidv4(), at = new Date().toISOString();
+    let file = { pdf_base64: pdfBuffer.toString('base64') };
+    try {
+      const { isBucketConfigured, buildKey, putToBucket } = await import('../utils/bucket.js');
+      if (isBucketConfigured()) { const key = buildKey(`offers/${id}`, '.pdf'); await putToBucket(key, pdfBuffer, 'application/pdf'); file = { pdf_key: key }; }
+    } catch (e) { console.warn('[offer] bucket upload failed, keeping the file in the record:', e.message); }
+    const version = Number((await one("SELECT COUNT(*) AS n FROM entities WHERE type='OfferLetterDispatch' AND data::jsonb->>'candidate_id'=$1", [candidate_id]))?.n || 0) + 1;
+    await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'OfferLetterDispatch',NULL,$2,$3)", [id, status, JSON.stringify({
+      id, candidate_id, version, status, error: error || '', offer_ref: offerRef, filename, ...file,
+      recipient_email: status === 'generated' ? '' : cand.email, candidate_name: params.name,
+      designation: params.position, department: params.department, annual_ctc: params.annualCTC, monthly_gross: params.sal.gross_monthly,
+      joining_date: params._jDate, terms: { ...input, salary: params.sal }, override_reason: overrideReason,
+      by: cu.id, by_name: cu.full_name || cu.email || '', created_at: at,
+    })]);
+  } catch (e) { console.error('[offer] could not record the offer version:', e.message); }
 }
 
 // ── Consent Form PDF — candidate details + the background-verification
@@ -1867,7 +1853,8 @@ ${declarationSignatureDataUrl
 // exactly: employee info grid, Earnings (Actual/Earned), Deductions, Other
 // Earnings (Bonus eligibility period / Gratuity years / OT / Others), Net
 // Payable, Verified By / Prepared & Approved By, signed declaration.
-function buildFnFSettlementPdf({ empName, employeeCode, designation, department, fFDate, doj, resignationDate, lwd, forMonth, fnf }) {
+async function buildFnFSettlementPdf({ empName, employeeCode, designation, department, fFDate, doj, resignationDate, lwd, forMonth, fnf }) {
+  const signer = resolveSigner(await listSignatories(), { role: 'Manager - HR & Admin' });
   return new Promise((resolve, reject) => {
     try {
       const printer = getPdfPrinter();
@@ -1952,7 +1939,7 @@ function buildFnFSettlementPdf({ empName, employeeCode, designation, department,
             columns: [
               { width: '45%', stack: [{ text: '_________________________', fontSize: 10 }, { text: 'Verified By', bold: true, fontSize: 10 }] },
               { width: '*', text: '' },
-              { width: '45%', stack: [{ text: '_________________________', fontSize: 10 }, { text: 'Prepared & Approved By', bold: true, fontSize: 10 }, { text: 'Manager - HR & Admin', fontSize: 9 }, ...(stampDataUrl ? [{ image: 'stamp', width: 82, margin: [0, -30, 0, 0], opacity: 0.85 }] : [])] },
+              { width: '45%', stack: [{ text: 'Prepared & Approved By', bold: true, fontSize: 10 }, signatoryNode(signer, { stamp: stampDataUrl || '', company: false })] },
             ],
           },
         ],
@@ -1975,7 +1962,8 @@ function buildFnFSettlementPdf({ empName, employeeCode, designation, department,
 // settlement (acceptExitFnF), since the acknowledgement text only makes sense
 // after that point — it names the accepted amount and the employee's own
 // typed-name confirmation as the acceptance record.
-function buildFnFSettlementAgreementPdf({ empName, employeeCode, designation, department, doj, resignationDate, lwd, netPayable, acceptedName, acceptedAt }) {
+async function buildFnFSettlementAgreementPdf({ empName, employeeCode, designation, department, doj, resignationDate, lwd, netPayable, acceptedName, acceptedAt }) {
+  const signer = resolveSigner(await listSignatories(), { role: 'Manager - HR & Admin' });
   return new Promise((resolve, reject) => {
     try {
       const printer = getPdfPrinter();
@@ -2014,7 +2002,7 @@ function buildFnFSettlementAgreementPdf({ empName, employeeCode, designation, de
                 { text: '(Employee Signature)', fontSize: 9, italics: true, margin: [0, 2, 0, 0] },
               ] },
               { width: '*', text: '' },
-              { width: '45%', stack: [{ text: '_________________________', fontSize: 10 }, { text: 'For MaxVolt Energy Industries Ltd.', bold: true, fontSize: 10 }, { text: 'Manager - HR & Admin', fontSize: 9 }, ...(stampDataUrl ? [{ image: 'stamp', width: 82, margin: [0, -30, 0, 0], opacity: 0.85 }] : [])] },
+              { width: '45%', ...signatoryNode(signer, { stamp: stampDataUrl || '' }) },
             ],
           },
         ],
@@ -2742,6 +2730,20 @@ router.post('/:name', async (req, res) => {
     return await handleLd(name, p, cu, res);
   }
   // Performance Management & Appraisal (routes/appraisal.js) — every ap_* function
+  // Left Employees archive and attendance history (routes/leftEmployees.js) — every le_* function
+  if (name.startsWith('le_')) {
+    const { handleLeftEmployees } = await import('./leftEmployees.js');
+    return await handleLeftEmployees(name, p, cu, res);
+  }
+  // Authorised signatories, the letter send log and offer letter helpers (routes/letters.js)
+  if (name.startsWith('sg_') || name.startsWith('lt_') || name.startsWith('of_')) {
+    const { handleLetters } = await import('./letters.js');
+    return await handleLetters(name, p, cu, res);
+  }
+  if (name.startsWith('ot_')) {
+    const { handleOvertime } = await import('./overtime.js');
+    return await handleOvertime(name, p, cu, res);
+  }
   if (name.startsWith('gp_')) {
     const { handleGatePass } = await import('./gatepass.js');
     return await handleGatePass(name, p, cu, res);
@@ -6874,9 +6876,9 @@ router.post('/:name', async (req, res) => {
       const from = String(p.from || p.date || ''), to = String(p.to || p.date || p.from || '');
       if (!ymd.test(from) || !ymd.test(to) || to < from) return res.json({ success: false, error: 'Choose a valid date range' });
       if ((new Date(to) - new Date(from)) / 86400000 > 92) return res.json({ success: false, error: 'Please export at most 3 months at a time' });
-      const emps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      const byUser = Object.fromEntries(emps.map(e => [e.user_id, e]));
       const rows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [from, to]));
+      const emps = rosterFor(parseEntities(await all("SELECT data FROM entities WHERE type='Employee'")), from, new Set(rows.map(r => r.user_id)));
+      const byUser = Object.fromEntries(emps.map(e => [e.user_id, e]));
       // The app stores IST wall-clock digits with a 'Z' suffix (the display layer drops the Z), so read the digits as-is: UTC formatting, NOT Asia/Kolkata (that would add 5h30).
       const fmtT = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString('en-IN', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: true }); };
       const num = (v) => { const n = Number(v); return v !== null && v !== undefined && v !== '' && Number.isFinite(n) ? n : null; };
@@ -6887,7 +6889,7 @@ router.post('/:name', async (req, res) => {
         return { addr: loc.location_address || loc.address || '', lat: ok ? lat : null, lng: ok ? lng : null, acc: num(loc.accuracy) };
       };
       const link = (l) => (l.lat !== null ? `https://www.google.com/maps?q=${l.lat},${l.lng}` : '');
-      const list = rows.filter(r => byUser[r.user_id] && (r.check_in_location || r.check_out_location)).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(byUser[a.user_id].display_name || '').localeCompare(String(byUser[b.user_id].display_name || '')) || String(a.check_in_time || '').localeCompare(String(b.check_in_time || '')));
+      const list = rows.filter(r => byUser[r.user_id] && !afterExit(byUser[r.user_id], String(r.date).slice(0, 10)) && (r.check_in_location || r.check_out_location)).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(byUser[a.user_id].display_name || '').localeCompare(String(byUser[b.user_id].display_name || '')) || String(a.check_in_time || '').localeCompare(String(b.check_in_time || '')));
       const ExcelJSL = (await import('exceljs')).default;
       const wb = new ExcelJSL.Workbook(); const ws = wb.addWorksheet('Check-in-out locations');
       const cols = [['S.No', 6], ['Emp Code', 12], ['Employee', 24], ['Department', 18], ['Date', 12], ['Check-in', 10], ['Check-in method', 14], ['Check-in location', 38], ['Check-in lat', 11], ['Check-in lng', 11], ['Check-in accuracy (m)', 12], ['Check-in map', 16], ['Check-out', 10], ['Check-out method', 14], ['Check-out location', 38], ['Check-out lat', 11], ['Check-out lng', 11], ['Check-out accuracy (m)', 12], ['Check-out map', 16]];
@@ -6925,9 +6927,10 @@ router.post('/:name', async (req, res) => {
       const monthEnd   = new Date(y, m, 0).toISOString().slice(0,10);
       const daysInMonth = new Date(y, m, 0).getDate();
 
-      let employees = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      if (arTeam) employees = employees.filter(e => arTeam.has(e.user_id));
       const attRows   = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
+      // active employees, plus anyone whose last working day falls in or after this month
+      let employees = rosterFor(parseEntities(await all("SELECT data FROM entities WHERE type='Employee'")), monthStart, new Set(attRows.map(a => a.user_id)));
+      if (arTeam) employees = employees.filter(e => arTeam.has(e.user_id));
 
       // Build attendance map: user_id → date → record (dedups any duplicate
       // rows for the same day, preferring a regularised record — see
@@ -6987,11 +6990,10 @@ router.post('/:name', async (req, res) => {
       };
 
       // Build report rows
+      const arOt = await loadOvertimeContext();
       const rows = employees.map(emp => {
         const shift  = getShift(emp.shift_id) || defaultShift;
-        const shiftHours = shift ? (toMinutes(shift.end_time) - toMinutes(shift.start_time)) / 60 : 8;
-        const stdMinutes = shiftHours * 60;
-        const isOTEligible = !!emp.overtime_eligible;
+        const isOTEligible = !arOt.policy.eligible_only || !!emp.overtime_eligible;
 
         let totalPresent = 0, totalAbsent = 0, totalLeave = 0, totalHoliday = 0, totalOff = 0;
         let totalWorkingMins = 0, totalOvertimeMins = 0;
@@ -7013,9 +7015,10 @@ router.post('/:name', async (req, res) => {
           // A day before this employee's own joining date must never read
           // as Absent (or anything else) — they simply weren't employed
           // yet. Same treatment as a future day that hasn't happened yet.
-          const isPreJoining = emp.date_of_joining && dateStr < emp.date_of_joining;
+          // ...and so is a day after a leaver's last working day.
+          const isPreJoining = (emp.date_of_joining && dateStr < emp.date_of_joining) || afterExit(emp, dateStr);
 
-          if (!rec) {
+          if (!rec || isPreJoining) {
             if (isPreJoining) { cell = ''; }
             else if (isHoliday) { cell = 'H'; totalHoliday++; }
             else if (isScheduledOff) { cell = 'OFF'; totalOff++; }
@@ -7025,15 +7028,10 @@ router.post('/:name', async (req, res) => {
             const s = rec.status;
             workedMins = Math.round((rec.working_hours || 0) * 60);
 
-            if (rec.check_in_time && rec.check_out_time) {
-              const checkIn  = new Date(rec.check_in_time);
-              const checkOut = new Date(rec.check_out_time);
-              workedMins = Math.max(0, Math.round((checkOut - checkIn) / 60000));
-            }
-
-            if (workedMins > stdMinutes && stdMinutes > 0) {
-              otMins = workedMins - stdMinutes;
-            }
+            // worked time and overtime from the punches themselves (breaks between sessions are not worked time)
+            const punched = workedFromPunches(rec);
+            if (punched.punches) workedMins = punched.minutes;
+            otMins = overtimeForDay({ record: rec, shift: arOt.shiftById[emp.shift_id] || arOt.defaultShift, holiday: arOt.holidayByDate[dateStr], employee: emp, policy: arOt.policy }).ot_minutes;
 
             if (s === 'week_off') { cell = 'OFF'; totalOff++; }
             else if (s === 'holiday') { cell = 'H'; totalHoliday++; }
@@ -7245,9 +7243,9 @@ router.post('/:name', async (req, res) => {
       const daysInMonth = new Date(y, m, 0).getDate();
       const monthLabel  = new Date(y, m-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
-      let mEmps   = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
-      if (mTeamIds) mEmps = mEmps.filter(e => mTeamIds.has(e.user_id));
       const mAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [monthStart, monthEnd]));
+      let mEmps = rosterFor(parseEntities(await all("SELECT data FROM entities WHERE type='Employee'")), monthStart, new Set(mAttRows.map(a => a.user_id)));
+      if (mTeamIds) mEmps = mEmps.filter(e => mTeamIds.has(e.user_id));
 
       // Dedups any duplicate rows for the same day, preferring a
       // regularised record — see mapAttendanceByUserDate above.
@@ -7304,7 +7302,7 @@ router.post('/:name', async (req, res) => {
       // Saturday/Sunday check) — a shift that includes Saturday as a
       // working day must not show 'WO' for it just because there's no
       // attendance record yet.
-      const mStatusCode = (rec, dateStr, empRecs, workingDays, doj) => {
+      const mStatusCode = (rec, dateStr, empRecs, workingDays, doj, lwd) => {
         // A day before the employee even joined the company must never be
         // scored at all — not absent, not week-off, nothing — regardless of
         // what the calendar says about that date. Overrides every other
@@ -7333,7 +7331,7 @@ router.post('/:name', async (req, res) => {
           // Sunday gets wrongly sandwiched into 'A' by a Saturday that was
           // before they even joined.
           const satOk = isMusterWorked(empRecs[sat]) || mHolidaySet.has(sat) || (doj && sat < doj);
-          const monOk = isMusterWorked(empRecs[mon]) || mHolidaySet.has(mon) || (doj && mon < doj);
+          const monOk = isMusterWorked(empRecs[mon]) || mHolidaySet.has(mon) || (doj && mon < doj) || (lwd && mon > lwd);
           if (!satOk && !monOk) return 'A';
           return 'WO';
         }
@@ -7439,7 +7437,8 @@ router.post('/:name', async (req, res) => {
         const gatePassDays = new Set(); // day indices (1-based) with a gate pass, for cell fill/notes below
         for (let d=1; d<=daysInMonth; d++) {
           const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-          const code = mStatusCode(empRecs[ds], ds, empRecs, workingDays, emp.date_of_joining);
+          // blank after a leaver's last working day, like the days before joining
+          const code = afterExit(emp, ds) ? '' : mStatusCode(empRecs[ds], ds, empRecs, workingDays, emp.date_of_joining, isLeaver(emp) ? lastWorkingDay(emp) : '');
           codes.push(code);
           const gatePass = mGatePassMap[`${emp.user_id}|${ds}`];
           if (gatePass) gatePassDays.add(d);
@@ -8156,12 +8155,12 @@ router.post('/:name', async (req, res) => {
       const swMonthEnd = `${swY}-${String(swM).padStart(2,'0')}-${String(swDaysInMonth).padStart(2,'0')}`;
       const swMonthLabel = new Date(swY, swM-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
-      let swEmps = parseEntities(await all("SELECT data FROM entities WHERE type='Employee' AND status='active'"));
+      const swAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [swMonthStart, swMonthEnd]));
+      let swEmps = rosterFor(parseEntities(await all("SELECT data FROM entities WHERE type='Employee'")), swMonthStart, new Set(swAttRows.map(a => a.user_id)));
       if (swTeam) swEmps = swEmps.filter(e => swTeam.has(e.user_id));
       if (swdDept && swdDept !== 'all') swEmps = swEmps.filter(e => e.department === swdDept);
       swEmps.sort((a, b) => (a.department||'').localeCompare(b.department||'') || (a.display_name||'').localeCompare(b.display_name||''));
 
-      const swAttRows = parseEntities(await all("SELECT data FROM entities WHERE type='Attendance' AND data::jsonb->>'date' >= $1 AND data::jsonb->>'date' <= $2", [swMonthStart, swMonthEnd]));
       const swAttMap = {};
       for (const a of swAttRows) {
         if (!swAttMap[a.user_id]) swAttMap[a.user_id] = {};
@@ -8321,6 +8320,7 @@ router.post('/:name', async (req, res) => {
 
         for (let d = 1; d <= swDaysInMonth; d++) {
           const ds = `${swY}-${String(swM).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          if (afterExit(emp, ds)) continue;   // nothing after a leaver's last working day
           const rec = empRecs[ds];
           const weekday = swWeekdayNames[new Date(swY, swM-1, d).getDay()];
           const inMethod = swCheckInMethod(rec);
@@ -9092,6 +9092,7 @@ router.post('/:name', async (req, res) => {
           .map(r => JSON.parse(r.data).date)
       );
 
+      const otCtx = await loadOvertimeContext();
       const dataRows = employees.map((emp, idx) => {
         const pr        = payrollMap[emp.user_id];
         const attByDate = attMapSS[emp.user_id] || {};
@@ -9203,15 +9204,15 @@ router.post('/:name', async (req, res) => {
         // as the standalone Overtime Management report).
         const referralBonus    = referralBonusByUser[emp.user_id] || 0;
         const performanceBonus = performanceBonusByUser[emp.user_id] || 0;
-        let overtimeHours = 0, overtimePay = 0;
+        // Overtime comes from the shared calculation (utils/overtime.js), so this sheet always agrees with the Overtime reports.
+        let otMinutes = 0;
         if (hasAtt) {
-          const hourlyRate = (basicFixed / 26) / 8;
           for (const { ds } of monthDates) {
             const rec = attByDate[ds];
-            if (rec?.working_hours > 8) overtimeHours += rec.working_hours - 8;
+            if (rec) otMinutes += overtimeForDay({ record: rec, shift: otCtx.shiftById[emp.shift_id] || otCtx.defaultShift, holiday: otCtx.holidayByDate[ds], employee: emp, policy: otCtx.policy }).ot_minutes;
           }
-          overtimePay = Math.round(hourlyRate * 2 * overtimeHours);
         }
+        const overtimePay = otAmount(basicFixed, otMinutes, otCtx.policy.multiplier);
 
         const totalDed = pfEmp + esiEmp;
         const net = Math.max(0, grossEarned - totalDed) + referralBonus + performanceBonus + overtimePay;
@@ -9674,7 +9675,7 @@ router.post('/:name', async (req, res) => {
         }
       }
 
-      const finalRecords = Object.values(best);
+      const finalRecords = await decorateOvertime(Object.values(best));
       await flagLeftWithoutGatePass(finalRecords);
 
       return res.json({ records: finalRecords, gate_passes: gatePasses });
@@ -12780,8 +12781,13 @@ router.post('/:name', async (req, res) => {
       if (!cRow) return res.json({ success: false, error: 'Candidate not found' });
       const cand = JSON.parse(cRow.data);
       try {
-        const pdfBuffer = await buildOfferLetterPdf(buildOfferPdfParams(cand, p));
-        return res.json({ success: true, base64: pdfBuffer.toString('base64'), filename: `Offer_Letter_${(cand.full_name || 'Candidate').replace(/\s+/g, '_')}.pdf` });
+        const params = buildOfferPdfParams(cand, p);
+        if (params.sal.problems.length) return res.json({ success: false, error: params.sal.problems.join(' ') });
+        const pdfBuffer = await buildOfferLetterPdf(params);
+        const filename = `Offer_Letter_${(cand.full_name || 'Candidate').replace(/\s+/g, '_')}.pdf`;
+        // "Generate" keeps this version in the candidate's offer history; a plain preview does not
+        if (p.record) await recordOfferVersion({ candidate_id, cand, params, input: p, pdfBuffer, filename, status: 'generated', cu });
+        return res.json({ success: true, base64: pdfBuffer.toString('base64'), filename });
       } catch (e) {
         return res.json({ success: false, error: 'Failed to generate preview: ' + e.message });
       }
@@ -12799,12 +12805,17 @@ router.post('/:name', async (req, res) => {
 
       if (!cand.email) return res.json({ success: false, error: 'Candidate has no email address' });
 
-      // Hard gate — server-side, not just a disabled button on the frontend
-      // — the offer letter must not go out until every mandatory pre-offer
-      // document (Aadhaar, salary slips, bank statements) has actually been
-      // HR-verified, not merely uploaded.
+      if (!validEmail(cand.email)) return res.json({ success: false, error: 'The candidate’s email address is not valid.' });
+      if (cand.status === 'joined') return res.json({ success: false, error: 'This candidate has already joined.' });
+      if (!joining_date) return res.json({ success: false, error: 'Enter the date of joining.' });
+
+      // Hard gate — server-side, not just a disabled button on the frontend — the offer letter must not go out until every
+      // mandatory pre-offer document has been HR-verified. HR / admin may send without them only by recording a reason.
+      const overrideReason = String(p.override_reason || '').trim().slice(0, 500);
       if (cand.doc_collection_status !== 'verified') {
-        return res.json({ success: false, error: 'All mandatory documents must be verified before the offer letter can be sent.' });
+        if (!(await hasRole(cu, HR_ROLES)) || overrideReason.length < 10) {
+          return res.json({ success: false, needs_override: true, error: 'The mandatory documents are not verified yet. HR or admin can send anyway by giving a reason (at least 10 characters).' });
+        }
       }
 
       const name       = cand.full_name || cand.name || 'Candidate';
@@ -12819,7 +12830,8 @@ router.post('/:name', async (req, res) => {
       // Canonical salary math — same helper previewOfferLetterPdf uses, so
       // the two can never compute different numbers for the same inputs.
       const sal = computeOfferSalary(ctc, medical_contribution, salary_overrides);
-      const isESI = sal.isESI, medicalM = sal.medical_monthly, bonusType = sal.bonusType;
+      if (sal.problems.length) return res.json({ success: false, error: sal.problems.join(' ') });
+      const isESI = sal.isESI;
 
       const offerRef    = `MEIL/HR/OL/${new Date().getFullYear()}/${String(Math.floor(Math.random() * 9000) + 1000)}`;
       const acceptToken = uuidv4();
@@ -12831,22 +12843,10 @@ router.post('/:name', async (req, res) => {
       const appBase = process.env.APP_URL || 'https://maxone.maxvoltenergy.com';
       const acceptLink = `${appBase}/offer-accept/${acceptToken}`;
 
-      // PF deduction row always shown (all employees); ESI shown when applicable
       const td   = (v) => `<td style="padding:6px 8px;border:1px solid #ddd;">${v}</td>`;
       const tdr  = (v) => `<td style="padding:6px 8px;border:1px solid #ddd;text-align:right;">${v}</td>`;
-      const trow = (cells) => `<tr>${cells.join('')}</tr>`;
-      const totalDedAnnual  = sal.pf_emp_annual  + sal.esi_emp_annual;
-      const totalDedMonthly = sal.pf_emp_monthly + sal.esi_emp_monthly;
-      const dedRows = [
-        trow([td('PF Employee Contribution (12% on Basic, max ₹25,000)'), tdr(fmtIN(sal.pf_emp_annual)), tdr(fmtIN(sal.pf_emp_monthly))]),
-        isESI ? trow([td('ESI Employee Contribution (0.75% on Basic)'), tdr(fmtIN(sal.esi_emp_annual)), tdr(fmtIN(sal.esi_emp_monthly))]) : '',
-      ].join('');
-      const empRows = [
-        trow([td('PF Employer Contribution'), tdr(fmtIN(sal.pf_employer_annual)), tdr(fmtIN(sal.pf_employer_monthly))]),
-        isESI ? trow([td('ESI Employer Contribution (3.25% on Basic)'), tdr(fmtIN(sal.esi_employer_annual)), tdr(fmtIN(sal.esi_employer_monthly))]) : '',
-        medicalM > 0 ? trow([td('Medical Contribution'), tdr(fmtIN(sal.medical_annual)), tdr(fmtIN(sal.medical_monthly))]) : '',
-        trow([td(bonusType), tdr(fmtIN(sal.bonus_annual)), tdr(fmtIN(sal.bonus_monthly))]),
-      ].join('');
+      const esc  = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const salRows = (list) => list.map(([label, annual, monthly]) => `<tr>${td(esc(label))}${tdr(fmtIN(annual))}${tdr(fmtIN(monthly))}</tr>`).join('');
 
       const th  = (t, right) => `<th style="padding:8px;border:1px solid #ccc;${right?'text-align:right;':''}">${t}</th>`;
       const sub = (label, annual, monthly) => `<tr style="background:#d9d9d9;font-weight:700;"><td style="padding:6px 10px;border:1px solid #ccc;">${label}</td><td style="padding:6px 10px;border:1px solid #ccc;text-align:right;">${fmtIN(annual)}</td><td style="padding:6px 10px;border:1px solid #ccc;text-align:right;">${fmtIN(monthly)}</td></tr>`;
@@ -12858,14 +12858,14 @@ router.post('/:name', async (req, res) => {
   </thead>
   <tbody>
     ${sec('Earnings')}
-    ${[[salary_overrides?.basic?'Basic Salary':'Basic (50% of CTC)',sal.basic_annual,sal.basic_monthly],[salary_overrides?.hra?'House Rent Allowance':'HRA (40% of Basic)',sal.hra_annual,sal.hra_monthly],[salary_overrides?.conveyance?'Conveyance Allowance':'Conveyance Allowance (Balance)',sal.conveyance_annual,sal.conveyance_monthly]].map(([l,a,m])=>trow([td(l),tdr(fmtIN(a)),tdr(fmtIN(m))])).join('')}
+    ${salRows(sal.rows.earnings)}
     ${sub('Total Gross Salary (A)', sal.gross_annual, sal.gross_monthly)}
     ${sec('Deduction')}
-    ${dedRows}
-    ${sub('Total Deduction (B)', totalDedAnnual, totalDedMonthly)}
+    ${salRows(sal.rows.deductions)}
+    ${sub('Total Deduction (B)', sal.deduction_annual, sal.deduction_monthly)}
     ${sub('Total Net Salary (A-B)', sal.net_annual, sal.net_monthly)}
     ${sec('Contribution')}
-    ${empRows}
+    ${salRows(sal.rows.contributions)}
     ${sub('Total Contribution (C)', sal.contribution_annual, sal.contribution_monthly)}
     <tr style="background:#d9d9d9;font-weight:700;font-size:12px;"><td style="padding:8px 10px;border:1px solid #ccc;">Annually CTC (A+C)</td><td style="padding:8px 10px;border:1px solid #ccc;text-align:right;color:#1d4ed8;">${fmtIN(sal.gross_annual + sal.contribution_annual)}</td><td style="padding:8px 10px;border:1px solid #ccc;text-align:right;color:#1d4ed8;">${fmtIN(sal.gross_monthly + sal.contribution_monthly)}</td></tr>
   </tbody>
@@ -12921,6 +12921,15 @@ router.post('/:name', async (req, res) => {
   </div>
 </div>`;
 
+      // The PDF is built first: if it fails, nothing is sent and the candidate record stays as it was.
+      const pdfParams = buildOfferPdfParams(cand, { ...p, offer_ref: offerRef });
+      let pdfBuffer;
+      try { pdfBuffer = await buildOfferLetterPdf(pdfParams); }
+      catch (pdfErr) {
+        console.error('[pdf] offer letter generation failed:', pdfErr.message);
+        return res.json({ success: false, error: 'The offer letter PDF could not be generated, so nothing was sent.' });
+      }
+
       // Store offer in candidate
       const offerData = {
         ...cand,
@@ -12940,19 +12949,11 @@ router.post('/:name', async (req, res) => {
         salary: sal,
         offer_valid_till: validTill.toISOString(),
         offer_status: 'sent',
+        employment_type: pdfParams.employmentType,
+        notice_period_days: pdfParams.noticeDays,
+        ...(overrideReason && cand.doc_collection_status !== 'verified' ? { offer_document_override: { reason: overrideReason, by: cu.id, by_name: cu.full_name || '', at: new Date().toISOString() } } : {}),
       };
       await run("UPDATE entities SET status='offered', data=$1 WHERE id=$2", [JSON.stringify(offerData), candidate_id]);
-
-      // Generate the real offer letter PDF (same buildOfferLetterPdf that
-      // previewOfferLetterPdf uses — guarantees what HR previewed is
-      // literally what the candidate receives) and attach it instead of a
-      // standalone salary-structure-only PDF.
-      let pdfBuffer = null;
-      try {
-        pdfBuffer = await buildOfferLetterPdf(buildOfferPdfParams(cand, p));
-      } catch (pdfErr) {
-        console.error('[pdf] offer letter generation failed:', pdfErr.message);
-      }
 
       let emailError = null;
       try {
@@ -12970,6 +12971,11 @@ router.post('/:name', async (req, res) => {
         console.error('sendOfferLetter email failed:', emailErr.message);
         emailError = emailErr.message;
       }
+
+      await recordOfferVersion({
+        candidate_id, cand, params: pdfParams, input: p, pdfBuffer, filename: `Offer_Letter_${name.replace(/\s+/g, '_')}.pdf`,
+        status: emailError ? 'failed' : 'sent', error: emailError, offerRef, cu, overrideReason: cand.doc_collection_status !== 'verified' ? overrideReason : '',
+      });
 
       return res.json({ success: true, accept_link: acceptLink, offer_ref: offerRef, email_error: emailError });
     }
@@ -13170,6 +13176,9 @@ router.post('/:name', async (req, res) => {
       const sal         = isFemale ? 'Ms.' : 'Mr.';
       const pronoun     = isFemale ? 'her' : 'him';
       const pronoun2    = isFemale ? 'she' : 'he';
+      const possessive  = isFemale ? 'her' : 'his';
+      // a leaver's certificate uses the recorded last working day unless HR typed another
+      if (!extra.last_working_day && isLeaver(emp) && lastWorkingDay(emp)) extra.last_working_day = lastWorkingDay(emp);
 
       const fmt = n => n ? '₹' + Number(n).toLocaleString('en-IN') : '[____]';
       // Allow HR to override CTC components via extra.ctc_override — use ??
@@ -13200,22 +13209,9 @@ router.post('/:name', async (req, res) => {
       const P    = t   => `<p style="margin:0 0 12px;text-align:justify;">${t}</p>`;
       const H    = t   => `<p style="margin:18px 0 6px;font-weight:bold;">${t}</p>`;
       const stampUrl = getStampDataUrl();
-      const sealHtml = () => stampUrl
-        ? `<img class="mx-seal" src="${stampUrl}" style="float:left;width:104px;margin:6px 16px 6px 0;opacity:0.92;" alt="Company Seal" />`
-        : `<div class="mx-seal" style="float:left;width:104px;height:104px;border:2.5px double #1d4ed8;border-radius:50%;margin:10px 16px 10px 0;"></div>`;
-      // Text renders BEFORE the seal marker, not after — letterSealNode()
-      // (the pdfmake-side node this marker becomes) uses a negative top
-      // margin to pull itself up over whatever rendered immediately before
-      // it, so the stamp physically overlaps "For Maxvolt Energy Industries
-      // Limited" / the signatory name, the way a real company stamp is
-      // pressed over a signature. Putting the seal first (old order) meant
-      // it just rendered as its own block with no overlap at all.
-      const sig  = (close, _defaultSigner, role) => {
-        const nameBlock = chosenSignatory
-          ? `<p style="margin:4px 0 2px;font-weight:bold;">${chosenSignatory}</p><p style="margin:0;font-size:12px;color:#555;">For Maxvolt Energy Industries Limited</p>`
-          : `<p style="margin:8px 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>${role ? `<p style="margin:0;">${role}</p>` : ''}`;
-        return `<p style="margin:16px 0 0;">${close}</p>${nameBlock}${sealHtml()}<div style="clear:both;"></div>`;
-      };
+      const signers = await listSignatories();
+      const signBlock = (role) => signatoryHtml(resolveSigner(signers, { id: extra.signatory_id, name: chosenSignatory, designation: extra.signatory_designation, role }), { stamp: stampUrl || '' });
+      const sig  = (close, _defaultSigner, role) => `<p style="margin:16px 0 0;">${close}</p>${signBlock(role)}`;
 
       const docList = `<ul style="margin:6px 0 14px 24px;line-height:1.85;">
   <li>Proof of address &amp; ID (Local &amp; Permanent).</li>
@@ -13401,12 +13397,8 @@ ${P('The relieving / resignation acceptance letter from your previous organizati
 ${docList}
 ${P('We welcome you to our organization and look forward to your contribution to the growth of the organization and yourself.')}
 ${P('Yours faithfully,')}
-<p style="margin:8px 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
-${sealHtml()}
-<p style="margin:8px 0 2px;">Manager &ndash; HR_______________________</p>
-<p style="margin:0 0 2px;">Date:</p>
-<p style="margin:0 0 24px;">Signature:</p>
-<div style="clear:both;"></div>
+${signBlock('Manager - HR')}
+<p style="margin:0 0 24px;">Date:</p>
 <p style="margin:0 0 4px;">I accept the offer on the terms and conditions as described in this letter</p>
 <p style="margin:0 0 2px;">Employee Name_________________________________</p>
 <p style="margin:0 0 2px;">Date:</p>
@@ -13430,10 +13422,7 @@ ${P('Please signify your acceptance to terms and conditions, mentioned above &am
 ${P('In case you have any queries, do not hesitate to reach your manager/supervisor/HR Department.')}
 ${P('Maxvolt Energy Industries Limited, congratulates you on your confirmation and wishes you well in your position.')}
 <p style="margin:20px 0 2px;">Sincerely,</p>
-<p style="margin:8px 0 2px;">HR Head</p>
-<p style="margin:0 0 2px;font-weight:bold;">Maxvolt Energy Industries Limited</p>
-${sealHtml()}
-<div style="clear:both;"></div>`),
+${signBlock('HR Head')}`),
 
         relieving: () => wrap(`
 <p style="text-align:center;font-weight:bold;font-size:17px;text-decoration:underline;margin:0 0 22px;">RELIEVING CUM EXPERIENCE LETTER</p>
@@ -13450,10 +13439,7 @@ ${P('Please note your Basic Information as maintained in the HR records at the t
 ${P(`During your tenure with the Company, you served as ${designation} in the ${department} Department. You performed your assigned responsibilities diligently, and we appreciate your contributions to the organization.`)}
 ${P('We sincerely thank you for your contributions to the organization and wish you continued success in all your future endeavors.')}
 <p style="margin:16px 0 2px;">Warm Regards,</p>
-<p style="margin:8px 0 2px;font-weight:bold;">MaxVolt Energy Industries Limited</p>
-${sealHtml()}
-<p style="margin:8px 0 20px;">(Authorized Signatory)</p>
-<div style="clear:both;"></div>`),
+${signBlock('Authorised Signatory')}`),
 
         increment: () => {
           const oldCTC = Number(extra.old_annual_ctc) || annualCTC || 0;
@@ -13480,10 +13466,7 @@ ${P('We would like to take this opportunity to express our appreciation for your
 ${P('In case of any queries, please feel free to contact the HR Department.')}
 ${P('Maxvolt Energy Industries Limited congratulates you on your salary revision and wishes you continued success for the future. &ldquo;We are excited to see you take on new challenges and reach even greater heights in your career with us.&rdquo;')}
 <p style="margin:0 0 8px;font-weight:bold;">Thank You!</p>
-<p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
-${sealHtml()}
-<p style="margin:8px 0 20px;">AGM HR</p>
-<div style="clear:both;"></div>
+${signBlock('AGM HR')}
 <p style="text-align:center;font-weight:bold;">(Confidential)</p>
 ${annexureBox}
 <p style="margin-top:14px;font-size:11.5px;">Remarks:</p>
@@ -13503,10 +13486,7 @@ ${P(`It shall be effective from <strong>${effDate}</strong>.`)}
 ${P('All the other terms and conditions of your appointment remain unchanged.')}
 <p style="margin:0 0 16px;font-style:italic;">&ldquo;Your growth is our growth. We are thrilled to support you on your journey toward achieving new milestones and breaking boundaries.&rdquo;</p>
 ${P('Thank You!')}
-<p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
-${sealHtml()}
-<p style="margin:8px 0 0;font-weight:bold;">${chosenSignatory || 'AGM HR'}</p>
-<div style="clear:both;"></div>`);
+${signBlock('AGM HR')}`);
         },
 
         salary_revision: () => {
@@ -13583,8 +13563,8 @@ ${revTable}`);
 ${P('<strong>To Whomsoever It May Concern</strong>')}
 ${P(`This is to certify that <strong>${empName}</strong> (Employee Code: <strong>${empCode}</strong>) was associated with <strong>Maxvolt Energy Industries Limited</strong> as <strong>${designation}</strong> in the <strong>${department}</strong> Department.`)}
 ${P(`<strong>Period of Service:</strong> From <strong>${doj}</strong> To <strong>${extra.last_working_day || '[Last Working Date]'}</strong>`)}
-${P(`During ${pronoun} tenure, ${pronoun2} demonstrated commendable work ethic, professional integrity and dedication. ${pronoun2.charAt(0).toUpperCase() + pronoun2.slice(1)} maintained a satisfactory record of performance and conduct throughout ${pronoun} association with our organization.`)}
-${P(`This certificate is issued at ${pronoun} request and for whatever purpose it may serve.`)}
+${P(`During ${possessive} tenure, ${pronoun2} demonstrated commendable work ethic, professional integrity and dedication. ${pronoun2.charAt(0).toUpperCase() + pronoun2.slice(1)} maintained a satisfactory record of performance and conduct throughout ${possessive} association with our organization.`)}
+${P(`This certificate is issued at ${possessive} request and for whatever purpose it may serve.`)}
 ${sig('Yours faithfully,', 'For Maxvolt Energy Industries Limited', 'Authorised Signatory – Human Resources Department')}
 <p style="margin-top:52px;">Employee Signature: _________________________________&nbsp;&nbsp;&nbsp;&nbsp; Date: _______________</p>`),
 
@@ -13613,10 +13593,7 @@ ${P(`<strong>Training Period:</strong> ${startDate} to ${endDate}`)}
 ${P(`As a trainee, you will be working under the supervision of the ${department} Department, and you will be expected to adhere to the company's policies and regulations.`)}
 ${P('We are excited to have you join our team and look forward to a mutually beneficial and productive training experience.')}
 ${P('Yours sincerely,')}
-<p style="margin:0 0 2px;font-weight:bold;">HR Manager</p>
-${sealHtml()}
-<p style="margin:8px 0 0;font-weight:bold;">Maxvolt Energy Industries Limited</p>
-<div style="clear:both;"></div>`);
+${signBlock('HR Manager')}`);
         },
 
         internship_experience: () => {
@@ -13631,11 +13608,8 @@ ${P(`<strong>Date:</strong> ${todayDate}`)}
 ${P(`This is to certify that <strong>${sal} ${empName}</strong> has successfully completed an internship with <strong>Maxvolt Energy Industries Limited</strong> as an <strong>${internRole}</strong> in the <strong>${department}</strong> Department from <strong>${startDate}</strong> to <strong>${endDate}</strong>.`)}
 ${P(`During the internship period, ${pronoun2} was involved in ${workSummary}.`)}
 ${P(`${pronoun2.charAt(0).toUpperCase() + pronoun2.slice(1)} demonstrated a positive attitude, willingness to learn, and professionalism while carrying out the assigned responsibilities.`)}
-${P(`We appreciate ${pronoun} efforts and contribution during the internship and wish ${pronoun} all the best for future academic and professional endeavors.`)}
-<p style="margin:0 0 2px;font-weight:bold;">For Maxvolt Energy Industries Limited</p>
-${sealHtml()}
-<p style="margin:8px 0 0;font-weight:bold;">HR Manager</p>
-<div style="clear:both;"></div>`);
+${P(`We appreciate ${possessive} efforts and contribution during the internship and wish ${pronoun} all the best for future academic and professional endeavors.`)}
+${signBlock('HR Manager')}`);
         },
 
       };
@@ -16711,8 +16685,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 <p>During ${gender === 'female' ? 'her' : 'his'} tenure, ${gender === 'female' ? 'she' : 'he'} has discharged all ${gender === 'female' ? 'her' : 'his'} duties and responsibilities assigned to ${gender === 'female' ? 'her' : 'him'} diligently and sincerely.</p>
 <p>We wish ${gender === 'female' ? 'her' : 'him'} all the best in ${gender === 'female' ? 'her' : 'his'} future endeavors.</p>
 <p style="margin-top:8px;">Sincerely,</p>
-<img src="/company-stamp.png" style="width:84px;opacity:0.85;display:block;margin:-6px 0 -6px;" onerror="this.style.display='none'" />
-<p>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
+${signatoryHtml(resolveSigner(await listSignatories(), { role: 'HR Department' }), { stamp: '/company-stamp.png' })}`;
 
           await run("UPDATE entities SET data=jsonb_set(data::jsonb,'{relieving_letter_generated}','true')::text,updated_at=NOW()::TEXT WHERE type='Exit' AND id=$1", [gedExitId]);
 
@@ -16726,8 +16699,7 @@ Focus on actionable, specific insights. Flag critical issues first, then warning
 <p>We found ${gender === 'female' ? 'her' : 'him'} to be hardworking, dedicated, and a team player with good interpersonal skills. ${gender === 'female' ? 'She' : 'He'} handled all ${gender === 'female' ? 'her' : 'his'} responsibilities with sincerity and professionalism.</p>
 <p>We wish ${gender === 'female' ? 'her' : 'him'} all the best in ${gender === 'female' ? 'her' : 'his'} future career.</p>
 <p style="margin-top:8px;">Sincerely,</p>
-<img src="/company-stamp.png" style="width:84px;opacity:0.85;display:block;margin:-6px 0 -6px;" onerror="this.style.display='none'" />
-<p>HR Department<br/><strong>Maxvolt Energy Industries Limited</strong></p>`;
+${signatoryHtml(resolveSigner(await listSignatories(), { role: 'HR Department' }), { stamp: '/company-stamp.png' })}`;
 
           await run("UPDATE entities SET data=jsonb_set(data::jsonb,'{experience_letter_generated}','true')::text,updated_at=NOW()::TEXT WHERE type='Exit' AND id=$1", [gedExitId]);
 
@@ -19559,14 +19531,26 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
       };
       const label   = LETTER_LABELS[letter_type] || 'HR Letter';
       const today   = new Date().toISOString().slice(0, 10);
-      const docId   = uuidv4();
+      // Recipient: the address on the employee's account, or one HR typed. Checked before anything is created or sent.
+      const empUser = await one("SELECT email, former_email, full_name FROM users WHERE id=$1", [user_id]);
+      if (!empUser) return res.status(404).json({ error: 'Employee account not found' });
+      const recipientMode = p.recipient_mode === 'custom' ? 'custom' : 'registered';
+      // a leaver's login address is moved aside when the account is disabled; their real address is kept in former_email
+      const recipient = String(recipientMode === 'custom' ? p.recipient_email || '' : empUser.former_email || empUser.email || '').trim();
+      if (!validEmail(recipient)) return res.status(400).json({ error: recipientMode === 'custom' ? 'Enter a valid email address.' : 'This employee has no valid email address on their account. Choose "Enter email address".' });
+      const ccList = String(cc || '').split(/[,;]/).map(x => x.trim()).filter(Boolean);
+      const badCc = ccList.find(x => !validEmail(x));
+      if (badCc) return res.status(400).json({ error: `CC address "${badCc}" is not valid.` });
+      // sending a letter that was already saved updates that document instead of creating a second copy
+      const priorRow = p.document_id ? await one("SELECT data FROM entities WHERE type='Document' AND id=$1 AND user_id=$2", [p.document_id, user_id]) : null;
+      const prior = priorRow ? JSON.parse(priorRow.data) : null;
+      const reuse = prior && prior.document_type === 'hr_letter' && prior.letter_type === letter_type;
+      const docId   = reuse ? prior.id || p.document_id : uuidv4();
 
       // Email to employee with PDF attachment (proper Maxvolt letterhead)
       let email_error = null;
-      let aslDocUrl = null;
+      let aslDocUrl = null, delivery = null;
       try {
-        const empUser = await one("SELECT email, full_name FROM users WHERE id=$1", [user_id]);
-        if (!empUser?.email) throw new Error('Employee has no email address on record');
 
         const pdfBuffer = await buildLetterPdf(label, ref || '', letter_content).catch(err => {
           console.error('Letter PDF generation failed:', err.message);
@@ -19585,19 +19569,17 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
           } catch (r2Err) { console.warn('[approveAndSendLetter] R2 upload failed:', r2Err.message); }
         }
 
-        const attachments = pdfBuffer
-          ? [{ filename: `${label.replace(/[^a-z0-9]/gi, '_')}.pdf`, content: pdfBuffer }]
-          : [];
+        if (!pdfBuffer) throw new Error('The PDF could not be generated, so nothing was sent.');
+        const attachments = [{ filename: `${label.replace(/[^a-z0-9]/gi, '_')}.pdf`, content: pdfBuffer }];
 
-        await sendEmail({
-          to: empUser.email,
+        delivery = await sendEmail({
+          to: recipient,
           meta: { source: 'employee-letter', confirm: true },
-          ...(cc ? { cc } : {}),
+          ...(ccList.length ? { cc: ccList } : {}),
           subject: `${label} — Maxvolt Energy Industries Limited`,
           html: `<div style="font-family:Arial,sans-serif;color:#111">
                  <p>Dear ${empUser.full_name || employee_name || 'Employee'},</p>
                  <p>Please find your <strong>${label}</strong> attached to this email as a PDF. This document has also been saved in your HR Documents section on the HRMS portal.</p>
-                 ${!pdfBuffer ? '<p style="color:#c00;font-size:12px;">Note: PDF attachment could not be generated this time. Please use Print / PDF from the portal instead.</p>' : ''}
                  <p style="color:#666;font-size:12px;margin-top:20px;">This is a system-generated letter from Maxvolt One. Please contact HR for any queries.</p>
                  </div>`,
           text: `Dear ${empUser.full_name || employee_name},\n\nPlease find your ${label} attached to this email.\n\nThis is a system-generated letter from Maxvolt One.`,
@@ -19607,8 +19589,19 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         email_error = e.message;
       }
 
+      const sentAt = new Date().toISOString();
+      const status = email_error ? 'failed' : 'sent';
+      const dispatchId = uuidv4();
+      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'LetterDispatch',$2,$3,$4)", [dispatchId, user_id, status, JSON.stringify({
+        id: dispatchId, document_id: docId, user_id, employee_name: employee_name || empUser.full_name || '', letter_type, label, ref: ref || '',
+        recipient_email: recipient, recipient_mode: recipientMode, cc: ccList, sent_at: sentAt, status, error: email_error || '',
+        message_id: delivery?.messageId || '', provider: delivery?.provider || '', sent_by: cu.id, sent_by_name: cu.full_name || cu.email || '', created_at: sentAt,
+      })]);
+
       const aslDocData = {
+        ...(reuse ? prior : {}),
         id: docId, user_id,
+        recipient_email: recipient, delivery_status: status,
         document_type: 'hr_letter',
         document_name: `${label}${ref ? ` (${ref})` : ''} — ${today}`,
         letter_type, letter_content, ref: ref || '',
@@ -19617,13 +19610,14 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         employee_name: employee_name || '',
         status: 'verified',
         generated_by: cu?.id || null,
-        sent_at: new Date().toISOString(),
-        created_at: new Date().toISOString(),
+        sent_at: email_error ? (reuse ? prior.sent_at || null : null) : sentAt,
+        created_at: (reuse && prior.created_at) || sentAt,
         updated_at: new Date().toISOString(),
       };
-      await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(aslDocData)]);
+      if (reuse) await run("UPDATE entities SET data=$1, updated_at=NOW()::TEXT WHERE id=$2 AND type='Document'", [JSON.stringify(aslDocData), p.document_id]);
+      else await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Document',$2,'verified',$3)", [docId, user_id, JSON.stringify(aslDocData)]);
 
-      return res.json({ success: true, document_id: docId, email_error });
+      return res.json({ success: true, document_id: docId, email_error, recipient_email: recipient, delivery_status: status });
     }
 
     case 'saveLetterAsDocument': {
@@ -19688,6 +19682,7 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         letter_type: r.letter_type, ref: r.ref, document_url: r.document_url || null,
         performance_review_id: r.performance_review_id || null,
         sent_at: r.sent_at || null, generated_by: r.generated_by || null,
+        recipient_email: r.recipient_email || '', delivery_status: r.delivery_status || (r.sent_at ? 'sent' : ''),
         created_at: r.created_at || r.created_date,
       }));
       return res.json({ success: true, letters, total: letters.length });
@@ -19918,61 +19913,6 @@ ${twSlabRows.map(s=>`<tr><td class="right">${s.income_from.toFixed(2)}</td><td c
         default:
           return res.status(400).json({ error: `Unknown report type: ${report_type}` });
       }
-    }
-
-    case 'getOvertimeData': {
-      if (!(await hasRole(cu, MGR_ROLES))) return res.status(403).json({ error: 'HR/Management access required' });
-      const { month, year } = p;
-      const startDate = `${year}-${String(month).padStart(2,'0')}-01`;
-      const lastDay = new Date(year, month, 0).getDate();
-      const endDate = `${year}-${String(month).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-
-      const empRows = await all("SELECT data FROM entities WHERE type='Employee' AND status='active'");
-      const employees = empRows.map(r => JSON.parse(r.data));
-
-      // One batched Attendance query for the whole month across every
-      // employee, plus one batched SalaryStructure query, instead of up to
-      // two round trips per employee — was O(n) sequential DB queries for
-      // a company-wide report.
-      const godAttRows = await all(
-        "SELECT user_id,data FROM entities WHERE type='Attendance' AND user_id = ANY($1) AND data::jsonb->>'date' BETWEEN $2 AND $3",
-        [employees.map(e => e.user_id), startDate, endDate]
-      );
-      const godAttByUser = {};
-      godAttRows.forEach(r => { (godAttByUser[r.user_id] ||= []).push(JSON.parse(r.data)); });
-      const godSsRows = await all("SELECT user_id,data FROM entities WHERE type='SalaryStructure' AND status='active' AND user_id = ANY($1)", [employees.map(e => e.user_id)]);
-      const godSsMap = {};
-      godSsRows.forEach(r => { if (!(r.user_id in godSsMap)) godSsMap[r.user_id] = JSON.parse(r.data); });
-
-      const overtimeData = [];
-      for (const emp of employees) {
-        const records = godAttByUser[emp.user_id] || [];
-        const shiftHrs = 8; // default shift hours; actual OT = worked beyond shift
-        const otRecords = records.filter(a => (a.working_hours || 0) > shiftHrs);
-        const totalOTHours = otRecords.reduce((sum, a) => sum + Math.max(0, (a.working_hours || 0) - shiftHrs), 0);
-        if (totalOTHours > 0) {
-          const ss = godSsMap[emp.user_id] || {};
-          const dailyRate = (ss.basic_salary || ss.basic_monthly || 0) / 26;
-          const hourlyRate = dailyRate / 8;
-          const otAmount = Math.round(hourlyRate * 2 * totalOTHours); // 2x rate
-          overtimeData.push({
-            employee_id: emp.id, user_id: emp.user_id,
-            name: emp.display_name, code: emp.employee_code, department: emp.department,
-            total_ot_hours: Math.round(totalOTHours * 10) / 10,
-            ot_amount: otAmount, dates: otRecords.map(a => ({ date: a.date, ot_hours: Math.max(0, (a.working_hours || 0) - shiftHrs) }))
-          });
-        }
-      }
-      const records = overtimeData.map(r => ({
-        employee_name: r.name, employee_code: r.code, department: r.department,
-        ot_hours: r.total_ot_hours, ot_amount: r.ot_amount, dates: r.dates,
-      }));
-      return res.json({
-        success: true, month, year, records,
-        total_ot_hours: Math.round(overtimeData.reduce((s, r) => s + r.total_ot_hours, 0) * 10) / 10,
-        total_ot_amount: overtimeData.reduce((s, r) => s + r.ot_amount, 0),
-        employees_with_ot: overtimeData.length,
-      });
     }
 
     case 'getWFHReport': {

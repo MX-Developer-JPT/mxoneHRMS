@@ -13,6 +13,7 @@ import { safeDate } from '@/lib/dateUtils';
 import { deriveOverallExitStatus, OVERALL_STATUS_COLORS } from '@/lib/exitStatus';
 import EmployeeDetailDialog from '../components/employees/EmployeeDetailDialog';
 import ExitDetailPanel from '../components/exit/ExitDetailPanel';
+import LeftAttendanceHistory from '@/components/attendance/LeftAttendanceHistory';
 
 const TABS = [
   { key: 'attendance', label: 'Attendance', icon: Clock },
@@ -39,7 +40,6 @@ export default function LeftEmployeeProfile() {
   const [loading, setLoading] = useState(true);
   const [employee, setEmployee] = useState(null);
   const [exitRecord, setExitRecord] = useState(null);
-  const [attendance, setAttendance] = useState([]);
   const [leave, setLeave] = useState([]);
   const [payroll, setPayroll] = useState([]);
   const [performance, setPerformance] = useState([]);
@@ -55,11 +55,10 @@ export default function LeftEmployeeProfile() {
   const load = async () => {
     setLoading(true);
     try {
-      const [empRows, usersRes, exits, att, lv, pay, perf, asst, docs] = await Promise.all([
+      const [empRows, usersRes, exits, lv, pay, perf, asst, docs] = await Promise.all([
         base44.entities.Employee.filter({ user_id: userId }),
         base44.functions.invoke('getAllUsers', {}),
         base44.entities.Exit.filter({ user_id: userId }),
-        base44.entities.Attendance.filter({ user_id: userId }, '-date', 500).catch(() => []),
         base44.entities.Leave.filter({ user_id: userId }, '-created_date', 200).catch(() => []),
         base44.entities.Payroll.filter({ user_id: userId }, '-year', 100).catch(() => []),
         base44.entities.PerformanceReview.filter({ user_id: userId }).catch(() => []),
@@ -72,7 +71,6 @@ export default function LeftEmployeeProfile() {
       setEmployee(emp ? { ...emp, user } : null);
       const ex = (exits || []).sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
       setExitRecord(ex || null);
-      setAttendance(att || []);
       setLeave(lv || []);
       setPayroll(pay || []);
       setPerformance(perf || []);
@@ -151,19 +149,7 @@ export default function LeftEmployeeProfile() {
           </div>
 
           <div className="p-4">
-            {activeTab === 'attendance' && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="text-xs text-gray-400 uppercase"><tr><th className="text-left py-1.5">Date</th><th className="text-left py-1.5">Status</th><th className="text-left py-1.5">Check In</th><th className="text-left py-1.5">Check Out</th></tr></thead>
-                  <tbody className="divide-y">
-                    {attendance.slice(0, 100).map(a => (
-                      <tr key={a.id}><td className="py-1.5">{a.date}</td><td className="py-1.5 capitalize">{a.status}</td><td className="py-1.5">{a.check_in_time || '—'}</td><td className="py-1.5">{a.check_out_time || '—'}</td></tr>
-                    ))}
-                    {!attendance.length && <tr><td colSpan={4} className="py-8 text-center text-gray-400">No attendance records</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {activeTab === 'attendance' && <LeftAttendanceHistory userId={userId} />}
 
             {activeTab === 'leave' && (
               <div className="overflow-x-auto">

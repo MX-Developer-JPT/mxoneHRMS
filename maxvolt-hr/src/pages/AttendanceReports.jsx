@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import { format } from 'date-fns';
 import { safeDate } from '@/lib/dateUtils';
+import { rosterFor, afterExit } from '@/lib/leavers';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6'];
 
@@ -36,7 +37,7 @@ export default function AttendanceReports() {
 
     const [records, emps, logs, shifts, holidays] = await Promise.all([
       base44.entities.Attendance.filter({ date: { $gte: startStr, $lte: endStr } }, '-date', 5000),
-      base44.entities.Employee.filter({ status: 'active' }, '-created_date', 500),
+      base44.entities.Employee.list('-created_date', 5000),
       base44.entities.AttendanceLog.filter({}, '-LogDate', 3000).catch(() => []),
       base44.entities.Shift.list().catch(() => []),
       base44.entities.Holiday.list().catch(() => []),
@@ -54,7 +55,8 @@ export default function AttendanceReports() {
     });
 
     // DOJ filter: only include employees who had joined by this month
-    const dojFilteredEmps = emps.filter(e => {
+    // active employees, plus anyone whose last working day falls in or after this month
+    const dojFilteredEmps = rosterFor(emps, startStr, new Set(filtered.map(r => r.user_id))).filter(e => {
       if (!e.date_of_joining) return true;
       const [dojY, dojM] = e.date_of_joining.split('-').map(Number);
       return year > dojY || (year === dojY && month >= dojM);
@@ -83,7 +85,7 @@ export default function AttendanceReports() {
       const empRecs = recByEmpDate[emp.user_id] || {};
       for (let d = 1; d <= lastDay; d++) {
         const ds = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-        if (ds > todayStr || empRecs[ds]) continue;
+        if (ds > todayStr || empRecs[ds] || afterExit(emp, ds)) continue;
         const off = scheduledOffStatus(emp, ds, holidaySet, shiftMap, defaultShift);
         combined.push({ user_id: emp.user_id, date: ds, status: off || 'absent', _synthetic: true });
       }
