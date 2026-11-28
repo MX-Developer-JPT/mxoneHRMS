@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import MobileSelect from '@/components/MobileSelect';
+import SalarySection, { blankSalary } from '@/components/onboarding/SalarySection';
 import { toast } from 'sonner';
 import { Loader2, Send, Copy, RefreshCw, Trash2, UserPlus, CheckCircle2, Mail, FolderOpen, Eye, RotateCcw } from 'lucide-react';
 import { ob, EMPLOYMENT_TYPES, DESIGNATION_TIERS, RELATIONS, employmentLabel, PAN_RE, IFSC_RE, digits } from '@/lib/onboarding';
@@ -24,6 +25,7 @@ const blank = () => ({
   bank_account: { account_holder_name: '', account_number: '', ifsc_code: '', bank_name: '', branch: '' },
   emergency_contact: { name: '', relationship: '', phone: '', address: '' },
   hr_notes: '',
+  salary: blankSalary(),
 });
 
 const STAGES = {
@@ -155,7 +157,7 @@ function Tracker({ refreshKey, onResent }) {
       <Dialog open={!!cancel} onOpenChange={o => !o && setCancel(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>Cancel onboarding — {cancel?.row?.name}</DialogTitle></DialogHeader>
-          <p className="text-xs text-gray-500">The login and everything entered so far are deleted, so the employee code and emails can be used again. This cannot be undone.</p>
+          <p className="text-xs text-gray-500">The login and everything entered so far (including the salary structure) are deleted, so the employee code and emails can be used again. This cannot be undone.</p>
           <Textarea placeholder="Reason (required)" value={cancel?.reason || ''} onChange={e => setCancel(c => ({ ...c, reason: e.target.value }))} />
           <Button variant="destructive" onClick={doCancel} disabled={!!busy}>{busy && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Cancel onboarding</Button>
         </DialogContent>
@@ -175,6 +177,7 @@ export default function OnboardingHR() {
   const [tab, setTab] = useState('tracker');
   const [tick, setTick] = useState(0);
   const [errors, setErrors] = useState([]);
+  const [salaryProblem, setSalaryProblem] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -215,8 +218,9 @@ export default function OnboardingHR() {
     if (f.bank_account.account_number || f.bank_account.ifsc_code || f.bank_account.bank_name) {
       if (!/^\d{6,20}$/.test(digits(f.bank_account.account_number)) || !IFSC_RE.test(f.bank_account.ifsc_code.toUpperCase()) || !f.bank_account.bank_name.trim()) p.push('bank details (account no., IFSC, bank)');
     }
+    if (salaryProblem) p.push(salaryProblem);
     return p;
-  }, [f]);
+  }, [f, salaryProblem]);
 
   const submit = async () => {
     setBusy(true); setErrors([]);
@@ -299,7 +303,9 @@ export default function OnboardingHR() {
             <F label="Branch"><Input value={f.bank_account.branch} onChange={e => setIn('bank_account', 'branch', e.target.value)} /></F>
           </Sec>
 
-          <Sec title="6 · Emergency contact">
+          <SalarySection title="6 · Salary structure" value={f.salary} onChange={v => set('salary', v)} joiningDate={f.date_of_joining} pfApplicable={f.pf_applicable} esiTicked={f.is_esi_applicable} onProblem={setSalaryProblem} />
+
+          <Sec title="7 · Emergency contact">
             <F label="Name" req><Input value={f.emergency_contact.name} onChange={e => setIn('emergency_contact', 'name', e.target.value)} /></F>
             <F label="Relationship" req><Sel value={f.emergency_contact.relationship} onChange={v => setIn('emergency_contact', 'relationship', v)}><option value="">Select…</option>{RELATIONS.map(r => <option key={r}>{r}</option>)}</Sel></F>
             <F label="Phone" req><Input value={f.emergency_contact.phone} onChange={e => setIn('emergency_contact', 'phone', e.target.value)} /></F>
@@ -324,6 +330,7 @@ export default function OnboardingHR() {
           {sent && (
             <div className="space-y-3 text-sm">
               {sent.email_sent ? <p>The link was emailed to <b>{sent.sent_to}</b>.</p> : <p className="text-amber-700">The email could not be sent{sent.email_error ? ` (${sent.email_error})` : ''}. Copy the link below and send it yourself (WhatsApp, SMS…).</p>}
+              {sent.salary_saved && <p className="text-green-700">The salary structure was saved. Later changes are made on the Salary Structure page.</p>}
               <p className="text-gray-600">Login ID: <b>{sent.login_email}</b> · the link works once and expires {fmt(sent.expires_at)}.</p>
               <div className="flex gap-2"><Input readOnly value={sent.invite_link} onFocus={e => e.target.select()} /><Button variant="outline" onClick={() => copy(sent.invite_link)}><Copy className="w-4 h-4" /></Button></div>
               <p className="text-[11px] text-gray-400">This link is only shown now. If it is lost, use “Resend link” in the Tracker to create a new one.</p>

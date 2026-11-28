@@ -17,6 +17,7 @@ import { randomBytes, createHash } from 'crypto';
 import { one, all, run } from '../db.js';
 import { sendEmail, emailTemplates } from '../utils/email.js';
 import { signToken } from './auth.js';
+import { buildSalaryStructure } from '../utils/salaryStructure.js';
 
 const INVITE_DAYS = 7;
 export const EMPLOYMENT_TYPES = ['full_time', 'part_time', 'contract', 'intern', 'trainee'];
@@ -185,12 +186,41 @@ function stageOf(emp, invite, role) {
   return 'invited';
 }
 
+// The salary step of "Start onboarding" is optional; when a CTC is given the structure is worked out here with the
+// organisation's PF / ESI wage ceilings (Payroll Settings), never taken from the browser.
+async function salaryFor(salary, pfApplicable) {
+  if (!salary || String(salary.ctc ?? '').trim() === '') return null;
+  const row = await one("SELECT data FROM entities WHERE type='PayrollConfiguration' ORDER BY created_at DESC LIMIT 1", []);
+  let cfg = {}; try { cfg = row ? JSON.parse(row.data) : {}; } catch { /* defaults */ }
+  // 15000 was the old ceiling still stored in some configurations; the organisation's ceiling is 25000
+  const pf = Number(cfg.pf_ceiling) && Number(cfg.pf_ceiling) !== 15000 ? Number(cfg.pf_ceiling) : 25000;
+  return buildSalaryStructure(salary, { pfCeiling: pf, esiCeiling: Number(cfg.esi_wage_ceiling) || 21000, pfApplicable });
+}
+async function saveSalaryStructure(userId, values, effectiveFrom, by) {
+  const id = uuidv4();
+  const data = { id, user_id: userId, effective_from: effectiveFrom, ...values, status: 'active', approved_by: by, revision_reason: 'Initial setup (onboarding)', source: 'onboarding', created_at: nowIso() };
+  await run("INSERT INTO entities(id,type,user_id,status,is_active,data) VALUES($1,'SalaryStructure',$2,'active',1,$3)", [id, userId, JSON.stringify(data)]);
+  // only one structure is active per person (an adopted older sign-up may already have one)
+  const others = await all("SELECT id, data FROM entities WHERE type='SalaryStructure' AND user_id=$1 AND status='active' AND id<>$2", [userId, id]);
+  for (const o of others) await run("UPDATE entities SET data=$1, status='inactive', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...JSON.parse(o.data), status: 'inactive', effective_to: effectiveFrom }), o.id]);
+  return id;
+}
+
 const HANDLERS = {
+  async ob_salary_preview(p, cu, res) {
+    if (!(await isHr(cu))) return res.status(403).json({ success: false, error: 'Only HR or admin can see salary calculations' });
+    const out = await salaryFor(p.salary, p.pf_applicable !== false);
+    return res.json({ success: true, errors: out?.errors || [], values: out?.values || null, summary: out?.summary || null });
+  },
+
   // ── HR: start onboarding for a new person ──
   async ob_initiate(p, cu, res) {
     if (!(await isHr(cu))) return res.status(403).json({ success: false, error: 'Only HR or admin can start onboarding' });
     const d = p.details || p;
     const errs = validateHrDetails(d);
+    const salary = await salaryFor(d.salary, d.pf_applicable !== false);
+    if (salary) errs.push(...salary.errors);
+    if (salary && d.salary.effective_from && !isDate(d.salary.effective_from)) errs.push('Salary effective date is not valid');
     if (errs.length) return res.json({ success: false, error: errs[0], errors: errs });
     const personal = clean(d.personal_email).toLowerCase();
     const official = clean(d.official_email).toLowerCase();
@@ -225,11 +255,12 @@ const HANDLERS = {
     if (existingEmp) { empId = existingEmp.id; await run("UPDATE entities SET data=$1, status='pending', updated_at=NOW()::TEXT WHERE id=$2", [JSON.stringify({ ...JSON.parse(existingEmp.data), ...data, id: empId, user_id: user.id }), empId]); }
     else { empId = uuidv4(); await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'Employee',$2,'pending',$3)", [empId, user.id, JSON.stringify({ id: empId, user_id: user.id, ...data })]); }
     const emp = { id: empId, ...data };
+    if (salary) await saveSalaryStructure(user.id, salary.values, d.salary.effective_from || d.date_of_joining, cu.id);
 
     const hrName = (await one('SELECT full_name FROM users WHERE id=$1', [cu.id]))?.full_name || 'HR';
     const { doc, link } = await issueInvite(user, emp, cu.id);
     const mail = await emailInvite({ user, emp, link, doc, hrName });
-    return res.json({ success: true, user_id: user.id, login_email: user.email, invite_link: link, email_sent: mail.sent, sent_to: mail.to, email_error: mail.error, expires_at: doc.expires_at });
+    return res.json({ success: true, salary_saved: !!salary, user_id: user.id, login_email: user.email, invite_link: link, email_sent: mail.sent, sent_to: mail.to, email_error: mail.error, expires_at: doc.expires_at });
   },
 
   async ob_resendInvite(p, cu, res) {
@@ -255,7 +286,7 @@ const HANDLERS = {
     const emp = erow ? parseRow(erow) : null;
     if (emp?.onboarding_submitted) return res.json({ success: false, error: 'The employee has already submitted — it cannot be cancelled' });
     if (clean(p.reason).length < 3) return res.json({ success: false, error: 'Please give a reason' });
-    await run("DELETE FROM entities WHERE user_id=$1 AND type IN ('OnboardingInvite','Employee','Document','AppTourProgress')", [p.user_id]);
+    await run("DELETE FROM entities WHERE user_id=$1 AND type IN ('OnboardingInvite','Employee','Document','AppTourProgress','SalaryStructure')", [p.user_id]);
     await run('DELETE FROM users WHERE id=$1', [p.user_id]);
     await run("INSERT INTO entities(id,type,user_id,status,data) VALUES($1,'OnboardingLog',NULL,'cancelled',$2)", [uuidv4(), JSON.stringify({ action: 'cancelled', name: emp?.display_name, employee_code: emp?.employee_code, login_email: user.email, reason: clean(p.reason, 300), by: cu.id, at: nowIso() })]);
     return res.json({ success: true });
